@@ -1,0 +1,6 @@
+/target/
+/dist/
+*.exe
+*.pdb
+# target-dir lokal (D:\), beda per mesin
+/.cargo/config.toml
