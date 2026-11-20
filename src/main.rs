@@ -1,6 +1,8 @@
 #![windows_subsystem = "windows"]
 
+mod bright;
 mod clip;
+mod devices;
 mod dragout;
 mod gfx;
 mod media;
@@ -10,7 +12,7 @@ mod timer;
 mod todo;
 
 use gfx::{Ctx, Fonts};
-use state::{Clip, Cmd, Shared, State};
+use state::{Clip, Cmd, DevKind, Device, Net, NetKind, Power, Shared, State, SysCmd};
 use std::{
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
@@ -33,11 +35,12 @@ use winit::{
 
 // ---------------------------------------------------------------- ukuran (logical)
 const WIN_W: f32 = 600.0;
-const WIN_H: f32 = 200.0;
+const WIN_H: f32 = 224.0;
 const PIP_W: f32 = 380.0;
 const PIP_H: f32 = 160.0;
 const EXP: (f32, f32) = (460.0, 162.0); // expanded biasa
 const LYR: (f32, f32) = (580.0, 146.0); // expanded + lirik inline
+const STA: (f32, f32) = (520.0, 198.0); // halaman system info
 
 const WHITE: [u8; 4] = [255, 255, 255, 255];
 const GRAY: [u8; 4] = [150, 150, 158, 255];
@@ -115,8 +118,35 @@ mod lay {
         let ws = [76.0, 66.0, 60.0];
         (x0 + xs[i], 118.0, ws[i], 22.0)
     }
+    // system info (STA): grid 2 kolom
+    fn st_cw(w: f32) -> f32 {
+        (w - 68.0 - 10.0) / 2.0
+    }
+    pub fn st_battery(x0: f32, w: f32) -> Rect {
+        (x0 + 34.0, 10.0, st_cw(w), 66.0)
+    }
+    pub fn st_net(x0: f32, w: f32) -> Rect {
+        (x0 + 44.0 + st_cw(w), 10.0, st_cw(w), 66.0)
+    }
+    pub fn st_volume(x0: f32, w: f32) -> Rect {
+        (x0 + 34.0, 82.0, st_cw(w), 44.0)
+    }
+    pub fn st_bright(x0: f32, w: f32) -> Rect {
+        (x0 + 44.0 + st_cw(w), 82.0, st_cw(w), 44.0)
+    }
+    pub fn st_devices(x0: f32, w: f32) -> Rect {
+        (x0 + 34.0, 132.0, w - 68.0 - 54.0, 44.0)
+    }
     pub fn quit(x0: f32, w: f32) -> Rect {
-        (x0 + w - 34.0 - 92.0, 116.0, 92.0, 24.0)
+        (x0 + w - 34.0 - 44.0, 132.0, 44.0, 44.0)
+    }
+    /// track slider di dalam tile volume/brightness
+    pub fn slider(r: Rect) -> Rect {
+        (r.0 + 42.0, r.1 + 27.0, r.2 - 56.0, 7.0)
+    }
+    /// ikon slider (klik ikon volume = mute)
+    pub fn slider_icon(r: Rect) -> (f32, f32) {
+        (r.0 + 21.0, r.1 + r.3 / 2.0)
     }
     // mode lirik inline (LYR)
     pub const L_ART: (f32, f32, f32) = (22.0, 12.0, 50.0);
@@ -484,6 +514,12 @@ struct Snap {
     tint: [u8; 3],
     clips: Vec<Clip>,
     clips_rev: u64,
+    power: Option<Power>,
+    muted: bool,
+    audio_out: String,
+    brightness: Option<f32>,
+    net: Net,
+    devices: Vec<Device>,
 }
 
 impl Snap {
@@ -522,6 +558,12 @@ impl Snap {
                 })
                 .collect(),
             clips_rev: s.clips_rev,
+            power: s.power.clone(),
+            muted: s.muted,
+            audio_out: s.audio_out.clone(),
+            brightness: s.brightness,
+            net: s.net.clone(),
+            devices: s.devices.clone(),
         }
     }
 }
@@ -535,12 +577,22 @@ enum Press {
     Shelf(usize, (f32, f32)),
     /// isi PiP: posisi awal (drag window kalau bergerak, klik = seek lirik)
     Pip((f32, f32)),
+    /// geser slider system info (rect track)
+    Slider(Slider, Rect),
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Slider {
+    Volume,
+    Brightness,
 }
 
 // ---------------------------------------------------------------- app
 struct App {
     shared: State,
     tx: mpsc::Sender<Cmd>,
+    sys_tx: mpsc::Sender<SysCmd>,
+    bright_tx: mpsc::Sender<f32>,
     fonts: Fonts,
     bold: Fonts,
     notch: Option<Win>,
@@ -613,7 +665,13 @@ impl App {
 
     fn target(&self, snap: &Snap) -> (f32, f32) {
         if self.expanded() {
-            if self.inline_on() { LYR } else { EXP }
+            if self.inline_on() {
+                LYR
+            } else if self.page == Page::Status {
+                STA
+            } else {
+                EXP
+            }
         } else if snap.activity.is_some() {
             (280.0, 44.0)
         } else if self.lyric_pill(snap) {
@@ -874,24 +932,7 @@ impl App {
                     button(&mut ctx, lay::timer_btn(x0, 1), "Reset", CHIP, WHITE, a);
                     button(&mut ctx, lay::timer_btn(x0, 2), "Skip", CHIP, WHITE, a);
                 }
-                Page::Status => {
-                    let bar = |ctx: &mut Ctx, y: f32, label: &str, f: f32, col: [u8; 4]| {
-                        ctx.text_b(label, x0 + 34.0, y, 13.0, fade(WHITE, a), mw);
-                        ctx.rrect(x0 + 34.0, y + 24.0, mw, 6.0, 3.0, fade(TRACK, a));
-                        ctx.rrect(x0 + 34.0, y + 24.0, (mw * f.clamp(0.0, 1.0)).max(6.0), 6.0, 3.0, fade(col, a));
-                    };
-                    match snap.battery {
-                        Some((p, chg)) => {
-                            let col = if chg { GREEN } else if p <= 20 { RED } else { WHITE };
-                            bar(&mut ctx, 22.0, &format!("Battery {p}%{}", if chg { " · charging" } else { "" }), p as f32 / 100.0, col);
-                        }
-                        None => {
-                            ctx.text("Battery: AC power", x0 + 34.0, 22.0, 13.0, fade(GRAY, a), mw);
-                        }
-                    }
-                    bar(&mut ctx, 76.0, &format!("Volume {}%", (snap.volume * 100.0).round() as i32), snap.volume, ACCENT);
-                    button(&mut ctx, lay::quit(x0, w), "Quit notchy", CHIP, RED, a);
-                }
+                Page::Status => draw_status(&mut ctx, snap, x0, w, a, self.cursor),
             }
         } else if let Some(act) = &snap.activity {
             let tw = text_w(&ctx, act, 14.0, true);
@@ -1167,11 +1208,59 @@ impl App {
                 }
             }
             Page::Status => {
+                let (vr, br) = (lay::st_volume(x0, w), lay::st_bright(x0, w));
+                let settings = |uri: &str| {
+                    let _ = std::process::Command::new("explorer.exe").arg(uri).spawn();
+                };
                 if inside(p, lay::quit(x0, w)) {
                     self.quit = true;
+                } else if inside(p, vr) {
+                    if near(p, lay::slider_icon(vr), 15.0) {
+                        let _ = self.sys_tx.send(SysCmd::ToggleMute);
+                        let mut s = self.shared.lock().unwrap();
+                        s.muted = !s.muted;
+                    } else if inside(p, grow(lay::slider(vr), 8.0, 10.0)) {
+                        self.press = Some(Press::Slider(Slider::Volume, lay::slider(vr)));
+                        self.set_slider(Slider::Volume, lay::slider(vr));
+                    }
+                } else if inside(p, br) {
+                    if inside(p, grow(lay::slider(br), 8.0, 10.0)) && self.shared.lock().unwrap().brightness.is_some() {
+                        self.press = Some(Press::Slider(Slider::Brightness, lay::slider(br)));
+                        self.set_slider(Slider::Brightness, lay::slider(br));
+                    }
+                } else if inside(p, lay::st_battery(x0, w)) {
+                    settings("ms-settings:batterysaver");
+                } else if inside(p, lay::st_net(x0, w)) {
+                    settings("ms-settings:network-status");
+                } else if inside(p, lay::st_devices(x0, w)) {
+                    settings("ms-settings:bluetooth");
                 }
             }
         }
+    }
+
+    /// Set nilai slider dari posisi kursor (0..1), langsung tampil di UI lalu dikirim ke thread sistem.
+    fn set_slider(&mut self, k: Slider, r: Rect) {
+        let f = (((self.cursor.0 - r.0) / r.2).clamp(0.0, 1.0) * 100.0).round() / 100.0;
+        self.apply_slider(k, f);
+    }
+
+    fn apply_slider(&mut self, k: Slider, f: f32) {
+        let f = f.clamp(0.0, 1.0);
+        let mut s = self.shared.lock().unwrap();
+        match k {
+            Slider::Volume => {
+                s.volume = f;
+                s.muted = false;
+                let _ = self.sys_tx.send(SysCmd::Volume(f));
+            }
+            Slider::Brightness => {
+                s.brightness = Some(f);
+                s.brightness_hold = Some(Instant::now() + Duration::from_millis(2500));
+                let _ = self.bright_tx.send(f);
+            }
+        }
+        self.last_sig = 0;
     }
 
     /// Tombol kiri dilepas (di window manapun).
@@ -1198,6 +1287,7 @@ impl App {
                     self.last_click = Some((Instant::now(), i));
                 }
             }
+            Some(Press::Slider(..)) => {}
             Some(Press::Pip(_)) => {
                 let p = self.cursor;
                 if let Some(&(_, ms)) = self.pip_hits.iter().find(|(r, _)| inside(p, *r)) {
@@ -1215,6 +1305,10 @@ impl App {
         match &self.press {
             Some(Press::Seek(b)) if !is_pip => {
                 self.seek = Some(((p.0 - b.0) / b.2).clamp(0.0, 1.0));
+            }
+            Some(Press::Slider(k, r)) if !is_pip => {
+                let (k, r) = (*k, *r);
+                self.set_slider(k, r);
             }
             Some(Press::Shelf(i, at)) if !is_pip && (p.0 - at.0).hypot(p.1 - at.1) > 5.0 => {
                 let i = *i;
@@ -1273,6 +1367,20 @@ impl App {
     }
 
     fn wheel_notch(&mut self, dy: f32) {
+        if self.page == Page::Status && !self.inline_on() {
+            let (x0, w, p) = (self.x0(), self.w.cur, self.cursor);
+            let step = dy.signum() * 0.02;
+            let (vol, br) = {
+                let s = self.shared.lock().unwrap();
+                (s.volume, s.brightness)
+            };
+            if inside(p, lay::st_volume(x0, w)) {
+                self.apply_slider(Slider::Volume, ((vol + step) * 50.0).round() / 50.0);
+            } else if let (true, Some(b)) = (inside(p, lay::st_bright(x0, w)), br) {
+                self.apply_slider(Slider::Brightness, ((b + step * 2.5) * 20.0).round() / 20.0);
+            }
+            return;
+        }
         let len = match self.page {
             Page::Clipboard => self.shared.lock().unwrap().clips.len(),
             Page::Todo => self.todos.items.len() + 1,
@@ -1318,6 +1426,307 @@ impl App {
         out += &format!("pomo_work={}\npomo_break={}\npomo_long={}\npomo_every={}\n", p_.work, p_.brk, p_.long, p_.every);
         let _ = std::fs::write(p, out);
     }
+}
+
+// ---------------------------------------------------------------- system info
+const TILE: [u8; 4] = [255, 255, 255, 15];
+const TILE_HI: [u8; 4] = [255, 255, 255, 26];
+const TILE_EDGE: [u8; 4] = [255, 255, 255, 18];
+
+fn tile(ctx: &mut Ctx, r: Rect, hov: bool, a: f32) {
+    ctx.rrect(r.0, r.1, r.2, r.3, 13.0, fade(if hov { TILE_HI } else { TILE }, a));
+    ctx.rrect_stroke(r.0, r.1, r.2, r.3, 13.0, 1.0, fade(TILE_EDGE, a));
+}
+
+fn fmt_speed(b: f32) -> String {
+    let k = b / 1024.0;
+    if k < 1000.0 {
+        format!("{:.0} KB/s", k)
+    } else if k < 10.0 * 1024.0 {
+        format!("{:.1} MB/s", k / 1024.0)
+    } else {
+        format!("{:.0} MB/s", k / 1024.0)
+    }
+}
+
+fn fmt_hm(secs: u32) -> String {
+    let m = (secs + 30) / 60;
+    if m >= 60 { format!("{}h {:02}m", m / 60, m % 60) } else { format!("{m}m") }
+}
+
+fn icon_speaker(ctx: &mut Ctx, x: f32, y: f32, level: f32, muted: bool, c: [u8; 4]) {
+    ctx.rrect(x - 9.0, y - 3.5, 4.5, 7.0, 1.2, c);
+    ctx.poly(&[(x - 5.5, y - 3.5), (x - 0.5, y - 7.5), (x - 0.5, y + 7.5), (x - 5.5, y + 3.5)], c);
+    if muted {
+        ctx.line(x + 3.0, y - 3.5, x + 9.0, y + 3.5, 1.7, c);
+        ctx.line(x + 3.0, y + 3.5, x + 9.0, y - 3.5, 1.7, c);
+        return;
+    }
+    if level > 0.0 {
+        ctx.arc_span(x - 0.5, y, 4.5, 1.7, -50.0, 100.0, c);
+    }
+    if level >= 0.5 {
+        ctx.arc_span(x - 0.5, y, 8.5, 1.7, -50.0, 100.0, c);
+    }
+}
+
+fn icon_sun(ctx: &mut Ctx, x: f32, y: f32, c: [u8; 4]) {
+    ctx.circle(x, y, 3.8, c);
+    for i in 0..8 {
+        let t = (i as f32 * 45.0).to_radians();
+        let (dx, dy) = (t.cos(), t.sin());
+        ctx.line(x + dx * 6.6, y + dy * 6.6, x + dx * 8.8, y + dy * 8.8, 1.7, c);
+    }
+}
+
+fn icon_net(ctx: &mut Ctx, x: f32, y: f32, k: NetKind, c: [u8; 4]) {
+    match k {
+        NetKind::Wifi | NetKind::Offline => {
+            let c = if k == NetKind::Offline { fade(c, 0.4) } else { c };
+            ctx.circle(x, y + 5.0, 1.8, c);
+            for r in [5.0, 8.8, 12.6] {
+                ctx.arc_span(x, y + 5.0, r, 1.9, -135.0, 90.0, c);
+            }
+            if k == NetKind::Offline {
+                ctx.line(x - 7.0, y - 7.0, x + 7.0, y + 7.0, 1.8, RED);
+            }
+        }
+        NetKind::Ethernet => {
+            ctx.rrect_stroke(x - 7.0, y - 6.5, 14.0, 11.0, 2.5, 1.6, c);
+            ctx.rrect(x - 3.0, y + 4.0, 6.0, 3.5, 1.0, c);
+            for i in 0..3 {
+                ctx.line(x - 3.0 + i as f32 * 3.0, y - 3.0, x - 3.0 + i as f32 * 3.0, y - 0.5, 1.3, c);
+            }
+        }
+        NetKind::Cellular => {
+            for i in 0..4 {
+                let h = 4.0 + i as f32 * 3.0;
+                ctx.rrect(x - 7.0 + i as f32 * 4.0, y + 6.0 - h, 2.8, h, 1.0, c);
+            }
+        }
+    }
+}
+
+fn icon_arrow(ctx: &mut Ctx, x: f32, y: f32, down: bool, c: [u8; 4]) {
+    let d = if down { 1.0 } else { -1.0 };
+    ctx.line(x, y - 4.5 * d, x, y + 4.0 * d, 1.7, c);
+    ctx.polyline(&[(x - 3.5, y + 0.8 * d), (x, y + 4.3 * d), (x + 3.5, y + 0.8 * d)], 1.7, c);
+}
+
+fn icon_bt(ctx: &mut Ctx, x: f32, y: f32, c: [u8; 4]) {
+    ctx.polyline(&[(x - 4.0, y - 4.0), (x + 4.0, y + 4.0), (x, y + 8.0), (x, y - 8.0), (x + 4.0, y - 4.0), (x - 4.0, y + 4.0)], 1.7, c);
+}
+
+fn icon_device(ctx: &mut Ctx, x: f32, y: f32, k: DevKind, c: [u8; 4]) {
+    match k {
+        DevKind::Audio => {
+            ctx.arc_span(x, y + 1.0, 6.0, 1.7, 180.0, 180.0, c);
+            ctx.rrect(x - 7.5, y, 3.6, 6.5, 1.5, c);
+            ctx.rrect(x + 3.9, y, 3.6, 6.5, 1.5, c);
+        }
+        DevKind::Input => {
+            ctx.rrect_stroke(x - 4.5, y - 7.0, 9.0, 14.0, 4.5, 1.6, c);
+            ctx.line(x, y - 4.8, x, y - 2.2, 1.6, c);
+        }
+        DevKind::Phone => {
+            ctx.rrect_stroke(x - 4.5, y - 7.5, 9.0, 15.0, 2.5, 1.6, c);
+            ctx.line(x - 1.5, y + 4.8, x + 1.5, y + 4.8, 1.4, c);
+        }
+        DevKind::Other => icon_bt(ctx, x, y, c),
+    }
+}
+
+fn icon_power(ctx: &mut Ctx, x: f32, y: f32, c: [u8; 4]) {
+    ctx.arc_span(x, y + 1.0, 7.5, 2.0, -55.0, 290.0, c);
+    ctx.line(x, y - 8.0, x, y - 1.0, 2.0, c);
+}
+
+fn icon_bolt(ctx: &mut Ctx, x: f32, y: f32, k: f32, c: [u8; 4]) {
+    let p = |dx: f32, dy: f32| (x + dx * k, y + dy * k);
+    ctx.poly(&[p(1.2, -5.5), p(-3.2, 0.8), p(-0.2, 0.8), p(-1.2, 5.5), p(3.2, -0.8), p(0.2, -0.8)], c);
+}
+
+/// Tile slider (volume / brightness): ikon kiri, label + nilai di atas, track bisa digeser.
+#[allow(clippy::too_many_arguments)]
+fn slider_tile(ctx: &mut Ctx, r: Rect, label: &str, value: &str, f: Option<f32>, dim: bool, hov: bool, a: f32) {
+    tile(ctx, r, hov, a);
+    let lw = r.2 - 42.0 - 14.0;
+    let vw = text_w(ctx, value, 11.5, true);
+    ctx.text(label, r.0 + 42.0, r.1 + 7.0, 11.5, fade(GRAY, a), lw - vw - 8.0);
+    ctx.text_b(value, r.0 + r.2 - 14.0 - vw, r.1 + 7.0, 11.5, fade(if dim { DIM } else { WHITE }, a), vw + 2.0);
+    let t = lay::slider(r);
+    ctx.rrect(t.0, t.1, t.2, t.3, t.3 / 2.0, fade([255, 255, 255, 34], a));
+    if let Some(f) = f {
+        let fw = (t.2 * f.clamp(0.0, 1.0)).max(t.3);
+        let (c0, c1) = if dim { ([110, 110, 118, 255], [140, 140, 148, 255]) } else { ([200, 200, 210, 255], WHITE) };
+        ctx.rrect_hgrad(t.0, t.1, fw, t.3, t.3 / 2.0, fade(c0, a), fade(c1, a));
+        let kx = t.0 + fw - t.3 / 2.0;
+        ctx.circle(kx, t.1 + t.3 / 2.0 + 0.6, 7.0, fade([0, 0, 0, 90], a));
+        ctx.circle(kx, t.1 + t.3 / 2.0, 6.2, fade(if dim { [170, 170, 178, 255] } else { WHITE }, a));
+    }
+}
+
+fn draw_status(ctx: &mut Ctx, snap: &Snap, x0: f32, w: f32, a: f32, cur: (f32, f32)) {
+    // ---- baterai
+    let r = lay::st_battery(x0, w);
+    tile(ctx, r, inside(cur, r), a);
+    let (cx, cy) = (r.0 + 34.0, r.1 + r.3 / 2.0);
+    match (snap.battery, &snap.power) {
+        (Some((pct, ac)), pw) => {
+            let pw = pw.clone().unwrap_or_default();
+            let charging = ac && pw.charging;
+            let col = if charging { GREEN } else if pct <= 20 { RED } else if pw.saver { ORANGE } else { WHITE };
+            ctx.arc(cx, cy, 21.0, 4.5, 1.0, fade([255, 255, 255, 30], a));
+            ctx.arc(cx, cy, 21.0, 4.5, (pct as f32 / 100.0).max(0.01), fade(col, a));
+            let px = if pct >= 100 { 11.5 } else { 13.0 };
+            center(ctx, &format!("{pct}%"), cx, cy - px * 0.66, px, fade(WHITE, a), 36.0, true);
+            let tx = r.0 + 66.0;
+            let tw = r.0 + r.2 - 10.0 - tx;
+            let mut x = tx;
+            if charging {
+                icon_bolt(ctx, x + 4.0, r.1 + 18.5, 1.25, fade(GREEN, a));
+                x += 12.0;
+            }
+            let state = if charging {
+                "Charging"
+            } else if ac {
+                if pct >= 99 { "Fully charged" } else { "Plugged in" }
+            } else {
+                "On battery"
+            };
+            ctx.text_b(state, x, r.1 + 10.0, 13.0, fade(WHITE, a), tw - (x - tx));
+            let eta = match (pw.secs, charging, ac) {
+                (Some(s), true, _) => format!("{} until full", fmt_hm(s)),
+                (Some(s), false, false) => format!("{} remaining", fmt_hm(s)),
+                (None, false, true) => "Connected to power".into(),
+                _ => "Estimating…".into(),
+            };
+            ctx.text(&eta, tx, r.1 + 29.0, 11.5, fade(GRAY, a), tw);
+            let mut info = Vec::new();
+            if pw.rate_mw != 0 {
+                info.push(format!("{:.1} W", pw.rate_mw.unsigned_abs() as f32 / 1000.0));
+            }
+            if pw.full_mwh > 0 {
+                info.push(format!("{:.0}/{:.0} Wh", pw.remain_mwh as f32 / 1000.0, pw.full_mwh as f32 / 1000.0));
+            }
+            let iw = ctx.text(&info.join(" · "), tx, r.1 + 46.0, 11.0, fade(DIM, a), tw);
+            if pw.saver {
+                let sx = tx + iw + if iw > 0.0 { 6.0 } else { 0.0 };
+                ctx.rrect(sx, r.1 + 46.0, 40.0, 15.0, 7.5, fade([255, 140, 80, 40], a));
+                center(ctx, "Saver", sx + 20.0, r.1 + 47.0, 10.0, fade(ORANGE, a), 38.0, true);
+            }
+        }
+        (None, _) => {
+            ctx.arc(cx, cy, 21.0, 4.5, 1.0, fade([255, 255, 255, 30], a));
+            icon_bolt(ctx, cx, cy, 2.0, fade(WHITE, a));
+            ctx.text_b("AC power", r.0 + 66.0, r.1 + 17.0, 13.0, fade(WHITE, a), r.2 - 76.0);
+            ctx.text("No battery", r.0 + 66.0, r.1 + 36.0, 11.5, fade(GRAY, a), r.2 - 76.0);
+        }
+    }
+
+    // ---- jaringan
+    let r = lay::st_net(x0, w);
+    tile(ctx, r, inside(cur, r), a);
+    let n = &snap.net;
+    icon_net(ctx, r.0 + 20.0, r.1 + 17.0, n.kind, fade(WHITE, a));
+    let name = match (n.kind, n.name.is_empty()) {
+        (NetKind::Offline, _) => "Offline",
+        (_, false) => n.name.as_str(),
+        (NetKind::Wifi, true) => "Wi-Fi",
+        (NetKind::Cellular, true) => "Cellular",
+        (NetKind::Ethernet, true) => "Ethernet",
+    };
+    ctx.text_b(name, r.0 + 38.0, r.1 + 9.0, 13.0, fade(WHITE, a), r.2 - 48.0);
+    let sy = r.1 + 28.0;
+    icon_arrow(ctx, r.0 + 16.0, sy + 7.0, true, fade(ACCENT, a));
+    let dw = ctx.text_b(&fmt_speed(n.down), r.0 + 24.0, sy, 12.0, fade(WHITE, a), 80.0);
+    let ux = (r.0 + 24.0 + dw + 14.0).max(r.0 + r.2 / 2.0);
+    icon_arrow(ctx, ux, sy + 7.0, false, fade(ORANGE, a));
+    ctx.text(&fmt_speed(n.up), ux + 8.0, sy, 12.0, fade(GRAY, a), r.0 + r.2 - 10.0 - ux - 8.0);
+    // sparkline riwayat (tinggi pakai akar supaya lalu lintas kecil tetap kelihatan)
+    let (gx, gw, gb, gh) = (r.0 + 12.0, r.2 - 24.0, r.1 + r.3 - 7.0, 13.0);
+    let cnt = sys::NET_HIST;
+    let bw = (gw - (cnt as f32 - 1.0) * 1.6) / cnt as f32;
+    let mx = n.hist.iter().map(|(d, u)| d.max(*u)).fold(48.0 * 1024.0, f32::max);
+    let off = cnt - n.hist.len().min(cnt);
+    for i in 0..cnt {
+        let bx = gx + i as f32 * (bw + 1.6);
+        match i.checked_sub(off).and_then(|j| n.hist.get(j)) {
+            Some(&(d, u)) => {
+                let hd = (gh * (d / mx).sqrt()).max(1.5);
+                let hu = (gh * (u / mx).sqrt()).max(1.5);
+                ctx.rrect(bx, gb - hd, bw, hd, bw / 2.0, fade([120, 200, 255, 200], a));
+                ctx.rrect(bx + bw * 0.25, gb - hu, bw * 0.5, hu, bw / 4.0, fade([255, 150, 90, 220], a));
+            }
+            None => ctx.rrect(bx, gb - 1.5, bw, 1.5, 0.75, fade([255, 255, 255, 22], a)),
+        }
+    }
+
+    // ---- volume
+    let r = lay::st_volume(x0, w);
+    let (ix, iy) = lay::slider_icon(r);
+    let hov = inside(cur, r);
+    let vlabel = if snap.audio_out.is_empty() { "Volume" } else { snap.audio_out.as_str() };
+    let vval = if snap.muted { "Muted".to_string() } else { format!("{}%", (snap.volume * 100.0).round() as i32) };
+    slider_tile(ctx, r, vlabel, &vval, Some(snap.volume), snap.muted, hov, a);
+    if near(cur, (ix, iy), 15.0) {
+        ctx.circle(ix, iy, 14.0, fade([255, 255, 255, 22], a));
+    }
+    icon_speaker(ctx, ix, iy, snap.volume, snap.muted, fade(if snap.muted { RED } else { WHITE }, a));
+
+    // ---- brightness
+    let r = lay::st_bright(x0, w);
+    let (ix, iy) = lay::slider_icon(r);
+    match snap.brightness {
+        Some(b) => {
+            slider_tile(ctx, r, "Brightness", &format!("{}%", (b * 100.0).round() as i32), Some(b), false, inside(cur, r), a);
+            icon_sun(ctx, ix, iy, fade([255, 214, 110, 255], a));
+        }
+        None => {
+            slider_tile(ctx, r, "Brightness", "n/a", None, true, false, a);
+            icon_sun(ctx, ix, iy, fade(DIM, a));
+        }
+    }
+
+    // ---- perangkat bluetooth
+    let r = lay::st_devices(x0, w);
+    tile(ctx, r, inside(cur, r), a);
+    icon_bt(ctx, r.0 + 21.0, r.1 + r.3 / 2.0, fade(ACCENT, a));
+    let mut x = r.0 + 40.0;
+    let right = r.0 + r.2 - 8.0;
+    if snap.devices.is_empty() {
+        ctx.text("No Bluetooth devices connected", x, r.1 + 15.0, 12.0, fade(GRAY, a), right - x);
+    }
+    for (i, d) in snap.devices.iter().enumerate() {
+        let bat = d.battery.map(|p| format!("{p}%"));
+        let bw_ = bat.as_ref().map(|b| text_w(ctx, b, 10.5, true) + 6.0).unwrap_or(0.0);
+        let nw = text_w(ctx, &d.name, 11.5, false).min(130.0);
+        let cw = 28.0 + nw + bw_ + 12.0;
+        let more = snap.devices.len() - i;
+        if x + cw > right && i > 0 {
+            let t = format!("+{more}");
+            let tw = text_w(ctx, &t, 11.5, true) + 18.0;
+            ctx.rrect(x, r.1 + 8.0, tw, 28.0, 14.0, fade(TILE_HI, a));
+            center(ctx, &t, x + tw / 2.0, r.1 + 15.0, 11.5, fade(GRAY, a), tw, true);
+            break;
+        }
+        let cw = cw.min(right - x);
+        ctx.rrect(x, r.1 + 8.0, cw, 28.0, 14.0, fade([255, 255, 255, 20], a));
+        icon_device(ctx, x + 15.0, r.1 + 22.0, d.kind, fade(WHITE, a));
+        let tw = ctx.text(&d.name, x + 28.0, r.1 + 14.5, 11.5, fade(WHITE, a), (cw - 40.0 - bw_).max(10.0));
+        if let Some(b) = &bat {
+            let col = if d.battery.is_some_and(|p| p <= 20) { RED } else { GREEN };
+            ctx.text_b(b, x + 28.0 + tw + 6.0, r.1 + 15.0, 10.5, fade(col, a), bw_);
+        }
+        x += cw + 6.0;
+    }
+
+    // ---- quit
+    let r = lay::quit(x0, w);
+    let hov = inside(cur, r);
+    ctx.rrect(r.0, r.1, r.2, r.3, 13.0, fade(if hov { [240, 90, 90, 60] } else { TILE }, a));
+    ctx.rrect_stroke(r.0, r.1, r.2, r.3, 13.0, 1.0, fade(if hov { [240, 90, 90, 90] } else { TILE_EDGE }, a));
+    icon_power(ctx, r.0 + r.2 / 2.0, r.1 + r.3 / 2.0, fade(if hov { [255, 120, 120, 255] } else { GRAY }, a));
 }
 
 /// Progress bar timeline (bisa digeser).
@@ -1425,7 +1834,7 @@ impl ApplicationHandler for App {
                 if self.press.is_some() {
                     self.drag_move(is_pip);
                 }
-                if is_notch && matches!(self.page, Page::Shelf | Page::Clipboard | Page::Todo) {
+                if is_notch && matches!(self.page, Page::Shelf | Page::Clipboard | Page::Todo | Page::Status) {
                     self.last_sig = 0; // efek hover baris
                 }
             }
@@ -1570,6 +1979,11 @@ impl ApplicationHandler for App {
         ((self.pip_font * 10.0) as i32, self.pip_size.0 as i32, self.pip_size.1 as i32, local_time().1).hash(&mut hs);
         (snap.clips.len(), snap.clips_rev, self.scroll, &self.editing, self.todos.items.len()).hash(&mut hs);
         (self.pomo.left().as_secs(), self.pomo.running(), self.pomo.phase).hash(&mut hs);
+        (snap.muted, &snap.audio_out, snap.brightness.map(|b| (b * 100.0).round() as i32), &snap.devices).hash(&mut hs);
+        if self.expanded() && self.page == Page::Status {
+            let pw = snap.power.as_ref().map(|p| (p.rate_mw / 100, p.secs.map(|s| s / 60), p.saver, p.remain_mwh / 100, p.full_mwh));
+            (pw, snap.net.down as u32, snap.net.up as u32, snap.net.kind, &snap.net.name, snap.net.hist.len()).hash(&mut hs);
+        }
         let sig = hs.finish();
 
         let changed = sig != self.last_sig;
@@ -1703,7 +2117,8 @@ fn main() {
             System::Threading::CreateMutexW,
         };
         let h = CreateMutexW(None, true, windows::core::w!(r"Local\notchy-single-instance"));
-        if GetLastError() == ERROR_ALREADY_EXISTS {
+        // NOTCHY_DUMP (debug screenshot) boleh jalan berdampingan dengan instance utama
+        if GetLastError() == ERROR_ALREADY_EXISTS && std::env::var_os("NOTCHY_DUMP").is_none() {
             return;
         }
         h
@@ -1711,7 +2126,9 @@ fn main() {
     let shared: State = Arc::new(Mutex::new(Shared::default()));
     let (tx, rx) = mpsc::channel();
     media::spawn(shared.clone(), rx);
-    sys::spawn(shared.clone());
+    let sys_tx = sys::spawn(shared.clone());
+    let bright_tx = bright::spawn(shared.clone());
+    devices::spawn(shared.clone());
     clip::spawn(shared.clone());
 
     let cfg = load_cfg();
@@ -1719,6 +2136,8 @@ fn main() {
     let mut app = App {
         shared,
         tx,
+        sys_tx,
+        bright_tx,
         fonts: Fonts::load(r"C:\Windows\Fonts\segoeui.ttf"),
         bold: Fonts::load(r"C:\Windows\Fonts\segoeuib.ttf"),
         notch: None,

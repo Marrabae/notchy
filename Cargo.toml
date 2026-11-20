@@ -8,7 +8,8 @@ ab_glyph = "0.2.32"
 serde_json = "1.0.154"
 tiny-skia = "0.12.0"
 ureq = "3.5.2"
-windows = { version = "0.62.2", features = ["Media_Control", "Foundation", "Storage_Streams", "Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_System_Power", "Win32_System_Com", "Win32_Media_Audio", "Win32_Media_Audio_Endpoints", "Win32_UI_Shell", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_UI_Shell_PropertiesSystem", "Graphics_Imaging", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_Security", "Win32_System_Ole", "Win32_System_SystemServices", "Win32_UI_Shell_Common", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Diagnostics_Debug", "Win32_Graphics_Dwm"] }
+windows = { version = "0.62.2", features = ["Media_Control", "Foundation", "Storage_Streams", "Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_System_Power", "Win32_System_Com", "Win32_Media_Audio", "Win32_Media_Audio_Endpoints", "Win32_UI_Shell", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_UI_Shell_PropertiesSystem", "Graphics_Imaging", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_Security", "Win32_System_Ole", "Win32_System_SystemServices", "Win32_UI_Shell_Common", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Diagnostics_Debug", "Win32_Graphics_Dwm", "Win32_System_Wmi", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Devices_Enumeration", "Foundation_Collections", "Networking_Connectivity"] }
+windows-collections = "0.3"
 windows-core = "0.62"
 winit = "0.30.13"
 

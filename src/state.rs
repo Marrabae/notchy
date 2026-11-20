@@ -24,6 +24,75 @@ pub struct Shared {
     pub clips: Vec<Clip>,
     /// naik setiap riwayat clipboard berubah (untuk trigger redraw)
     pub clips_rev: u64,
+    /// detail baterai (daya, kapasitas, estimasi waktu)
+    pub power: Option<Power>,
+    pub muted: bool,
+    /// nama perangkat output audio default
+    pub audio_out: String,
+    /// kecerahan layar internal 0..1 (None = tidak didukung)
+    pub brightness: Option<f32>,
+    /// UI baru saja mengubah brightness: thread polling jangan menimpa nilainya sebelum waktu ini
+    pub brightness_hold: Option<Instant>,
+    pub net: Net,
+    /// perangkat Bluetooth yang sedang tersambung
+    pub devices: Vec<Device>,
+}
+
+#[derive(Clone, Default, PartialEq)]
+pub struct Power {
+    /// daya (mW): positif = mengisi, negatif = terpakai
+    pub rate_mw: i32,
+    pub remain_mwh: u32,
+    pub full_mwh: u32,
+    /// estimasi detik: sisa (on battery) atau sampai penuh (charging)
+    pub secs: Option<u32>,
+    pub saver: bool,
+    /// benar-benar sedang mengisi (bisa false walau AC tersambung, mis. batas charge 80%)
+    pub charging: bool,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum NetKind {
+    #[default]
+    Offline,
+    Wifi,
+    Ethernet,
+    Cellular,
+}
+
+#[derive(Clone, Default)]
+pub struct Net {
+    pub kind: NetKind,
+    /// SSID / nama profil jaringan
+    pub name: String,
+    /// byte per detik
+    pub down: f32,
+    pub up: f32,
+    /// riwayat (down, up) terbaru di belakang
+    pub hist: Vec<(f32, f32)>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DevKind {
+    Audio,
+    Input,
+    Phone,
+    Other,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct Device {
+    /// DeviceInstanceId (unik walau nama sama)
+    pub id: String,
+    pub name: String,
+    pub kind: DevKind,
+    pub battery: Option<u8>,
+}
+
+/// Perintah dari UI ke thread sistem.
+pub enum SysCmd {
+    Volume(f32),
+    ToggleMute,
 }
 
 #[derive(Clone)]

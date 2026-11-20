@@ -259,11 +259,20 @@ impl Ctx<'_> {
         if frac <= 0.0 {
             return;
         }
+        self.arc_span(cx, cy, r, width, -90.0, 360.0 * frac, c);
+    }
+
+    /// Busur dari sudut `a0` (derajat; 0 = jam 3, -90 = jam 12) sepanjang `sweep` derajat searah jarum jam.
+    #[allow(clippy::too_many_arguments)]
+    pub fn arc_span(&mut self, cx: f32, cy: f32, r: f32, width: f32, a0: f32, sweep: f32, c: Rgba) {
+        if sweep <= 0.0 {
+            return;
+        }
         let s = self.s;
-        let n = ((48.0 * frac).ceil() as usize).max(2);
+        let n = ((48.0 * sweep / 360.0).ceil() as usize).max(2);
         let mut pb = PathBuilder::new();
         for i in 0..=n {
-            let t = -std::f32::consts::FRAC_PI_2 + std::f32::consts::TAU * frac * i as f32 / n as f32;
+            let t = (a0 + sweep * i as f32 / n as f32).to_radians();
             let (x, y) = ((cx + r * t.cos()) * s, (cy + r * t.sin()) * s);
             if i == 0 {
                 pb.move_to(x, y);
@@ -271,16 +280,75 @@ impl Ctx<'_> {
                 pb.line_to(x, y);
             }
         }
-        if frac >= 1.0 {
+        if sweep >= 360.0 {
             pb.close();
         }
         if let Some(path) = pb.finish() {
-            let mut p = Paint::default();
-            p.set_color_rgba8(c[0], c[1], c[2], c[3]);
-            p.anti_alias = true;
-            let st = tiny_skia::Stroke { width: width * s, line_cap: tiny_skia::LineCap::Round, ..Default::default() };
-            self.pm.stroke_path(&path, &p, &st, Transform::identity(), None);
+            self.stroke(&path, width, c);
         }
+    }
+
+    /// Garis bersambung (stroke, ujung bulat). Titik logical.
+    pub fn polyline(&mut self, pts: &[(f32, f32)], width: f32, c: Rgba) {
+        let mut pb = PathBuilder::new();
+        for (i, (x, y)) in pts.iter().enumerate() {
+            if i == 0 {
+                pb.move_to(x * self.s, y * self.s);
+            } else {
+                pb.line_to(x * self.s, y * self.s);
+            }
+        }
+        if let Some(path) = pb.finish() {
+            self.stroke(&path, width, c);
+        }
+    }
+
+    pub fn line(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, width: f32, c: Rgba) {
+        self.polyline(&[(x1, y1), (x2, y2)], width, c);
+    }
+
+    /// Garis tepi rounded rect (stroke tipis).
+    pub fn rrect_stroke(&mut self, x: f32, y: f32, w: f32, h: f32, r: f32, width: f32, c: Rgba) {
+        let k = width / 2.0;
+        if let Some(path) = self.rrect_path(x + k, y + k, w - width, h - width, r - k) {
+            self.stroke(&path, width, c);
+        }
+    }
+
+    fn stroke(&mut self, path: &Path, width: f32, c: Rgba) {
+        let mut p = Paint::default();
+        p.set_color_rgba8(c[0], c[1], c[2], c[3]);
+        p.anti_alias = true;
+        let st = tiny_skia::Stroke {
+            width: width * self.s,
+            line_cap: tiny_skia::LineCap::Round,
+            line_join: tiny_skia::LineJoin::Round,
+            ..Default::default()
+        };
+        self.pm.stroke_path(path, &p, &st, Transform::identity(), None);
+    }
+
+    /// Rounded rect dengan gradient horizontal (kiri -> kanan).
+    #[allow(clippy::too_many_arguments)]
+    pub fn rrect_hgrad(&mut self, x: f32, y: f32, w: f32, h: f32, r: f32, c0: Rgba, c1: Rgba) {
+        let Some(path) = self.rrect_path(x, y, w, h, r) else { return };
+        let st = vec![
+            GradientStop::new(0.0, Color::from_rgba8(c0[0], c0[1], c0[2], c0[3])),
+            GradientStop::new(1.0, Color::from_rgba8(c1[0], c1[1], c1[2], c1[3])),
+        ];
+        let Some(shader) = LinearGradient::new(
+            Point::from_xy(x * self.s, 0.0),
+            Point::from_xy((x + w) * self.s, 0.0),
+            st,
+            SpreadMode::Pad,
+            Transform::identity(),
+        ) else {
+            return;
+        };
+        let mut p = Paint::default();
+        p.shader = shader;
+        p.anti_alias = true;
+        self.pm.fill_path(&path, &p, FillRule::Winding, Transform::identity(), None);
     }
 
     /// Segitiga (ikon play/next/prev). Titik logical.

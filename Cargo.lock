@@ -668,6 +668,7 @@ dependencies = [
  "tiny-skia 0.12.0",
  "ureq",
  "windows",
+ "windows-collections",
  "windows-core",
  "winit",
  "winresource",
