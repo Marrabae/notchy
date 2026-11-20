@@ -874,6 +874,18 @@ impl App {
                     let open = self.todos.items.iter().filter(|t| !t.0).count();
                     ctx.text_b("Tasks", x0 + 34.0, 9.0, 13.0, fade(WHITE, a), 80.0);
                     ctx.text(&format!("{open} open"), x0 + 80.0, 10.0, 11.5, fade(DIM, a), 80.0);
+                    // donut progress: done / total (rata kanan header)
+                    let total = self.todos.items.len();
+                    if total > 0 {
+                        let done = total - open;
+                        let (dcx, dcy) = (x0 + w - 34.0 - 8.0, 17.0);
+                        let col = if done == total { GREEN } else { ACCENT };
+                        ctx.arc(dcx, dcy, 7.0, 2.6, 1.0, fade(TRACK, a));
+                        ctx.arc(dcx, dcy, 7.0, 2.6, done as f32 / total as f32, fade(col, a));
+                        let label = format!("{done}/{total} done");
+                        let lw = text_w(&ctx, &label, 11.5, false);
+                        ctx.text(&label, dcx - 13.0 - lw, 10.0, 11.5, fade(if done == total { GREEN } else { GRAY }, a), 90.0);
+                    }
                     // baris input
                     let r = lay::row(x0, w, 0);
                     match &self.editing {
