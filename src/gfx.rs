@@ -3,7 +3,7 @@ use std::{cell::RefCell, collections::HashMap, rc::Rc, sync::OnceLock};
 use std::ffi::c_void;
 use tiny_skia::{
     Color, FillRule, FilterQuality, GradientStop, LinearGradient, Paint, Path, PathBuilder, Pattern, Pixmap, Point,
-    SpreadMode, Transform,
+    RadialGradient, SpreadMode, Transform,
 };
 use windows::Win32::{
     Foundation::{COLORREF, HWND, POINT, SIZE},
@@ -349,6 +349,39 @@ impl Ctx<'_> {
         p.shader = shader;
         p.anti_alias = true;
         self.pm.fill_path(&path, &p, FillRule::Winding, Transform::identity(), None);
+    }
+
+    /// Cahaya radial berwarna `c` (memudar ke transparan) berpusat di (cx, cy) radius `rad`, dipotong ke rounded rect.
+    #[allow(clippy::too_many_arguments)]
+    pub fn rrect_glow(&mut self, x: f32, y: f32, w: f32, h: f32, r: f32, cx: f32, cy: f32, rad: f32, c: Rgba) {
+        let Some(path) = self.rrect_path(x, y, w, h, r) else { return };
+        let ctr = Point::from_xy(cx * self.s, cy * self.s);
+        let st = vec![
+            GradientStop::new(0.0, Color::from_rgba8(c[0], c[1], c[2], c[3])),
+            GradientStop::new(1.0, Color::from_rgba8(c[0], c[1], c[2], 0)),
+        ];
+        let Some(shader) = RadialGradient::new(ctr, 0.0, ctr, rad * self.s, st, SpreadMode::Pad, Transform::identity())
+        else {
+            return;
+        };
+        let mut p = Paint::default();
+        p.shader = shader;
+        p.anti_alias = true;
+        self.pm.fill_path(&path, &p, FillRule::Winding, Transform::identity(), None);
+    }
+
+    /// Bayangan lembut di bawah rounded rect: lapisan rrect membesar bertahap dengan alpha kecil (murah, tanpa blur).
+    #[allow(clippy::too_many_arguments)]
+    pub fn shadow(&mut self, x: f32, y: f32, w: f32, h: f32, r: f32, spread: f32, dy: f32, alpha: f32) {
+        const N: usize = 7;
+        let per = (alpha / N as f32).clamp(0.0, 255.0) as u8;
+        if per == 0 {
+            return;
+        }
+        for i in 0..N {
+            let g = spread * (N - i) as f32 / N as f32;
+            self.rrect(x - g, y + dy - g * 0.5, w + 2.0 * g, h + 2.0 * g * 0.7, r + g, [0, 0, 0, per]);
+        }
     }
 
     /// Segitiga (ikon play/next/prev). Titik logical.

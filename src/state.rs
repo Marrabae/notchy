@@ -20,6 +20,8 @@ pub struct Shared {
     pub art: Option<Arc<tiny_skia::Pixmap>>,
     /// warna rata-rata artwork (untuk gradient background)
     pub tint: [u8; 3],
+    /// warna paling hidup dari artwork (untuk aksen UI: progress bar, ikon aktif, glow)
+    pub accent: [u8; 3],
     /// riwayat clipboard teks & gambar (terbaru di depan), hanya di memori
     pub clips: Vec<Clip>,
     /// naik setiap riwayat clipboard berubah (untuk trigger redraw)

@@ -94,11 +94,12 @@ fn poll_once(state: &State, rx: &Receiver<Cmd>, last_key: &mut String, art_tries
     }
     if *art_tries < 8 {
         *art_tries += 1;
-        if let Ok((pm, tint)) = load_art(&props) {
+        if let Ok((pm, tint, accent)) = load_art(&props) {
             *art_tries = u8::MAX;
             let mut s = state.lock().unwrap();
             s.art = Some(Arc::new(pm));
             s.tint = tint;
+            s.accent = accent;
         }
     }
     if changed {
@@ -223,7 +224,7 @@ fn parse_lrc(lrc: &str) -> Vec<(i64, String)> {
 }
 
 /// Ambil thumbnail dari SMTC, crop tengah jadi kotak 128px (RGBA premultiplied) + warna rata-rata.
-fn load_art(props: &Props) -> windows::core::Result<(Pixmap, [u8; 3])> {
+fn load_art(props: &Props) -> windows::core::Result<(Pixmap, [u8; 3], [u8; 3])> {
     const S: u32 = 128;
     let stream = props.Thumbnail()?.OpenReadAsync()?.join()?;
     let dec = BitmapDecoder::CreateAsync(&stream)?.join()?;
@@ -263,5 +264,28 @@ fn load_art(props: &Props) -> windows::core::Result<(Pixmap, [u8; 3])> {
     // normalisasi: kanal tertinggi = 150 agar tint tetap kelihatan tapi tidak menyilaukan
     let mx = (*avg.iter().max().unwrap()).max(1) as f32;
     let tint = avg.map(|c| ((c as f32 / mx) * 150.0) as u8);
-    Ok((pm, tint))
+
+    // aksen: rata-rata berbobot saturasi² x kecerahan -> warna "paling hidup" artwork (bukan rata-rata keruh)
+    let (mut vac, mut vw) = ([0f32; 3], 0f32);
+    for px in data[..n].chunks_exact(4) {
+        let (r, g, b) = (px[0] as f32, px[1] as f32, px[2] as f32);
+        let (hi, lo) = (r.max(g).max(b), r.min(g).min(b));
+        if hi < 40.0 {
+            continue;
+        }
+        let sat = (hi - lo) / hi;
+        let w = sat * sat * (hi / 255.0);
+        vac[0] += w * r;
+        vac[1] += w * g;
+        vac[2] += w * b;
+        vw += w;
+    }
+    // artwork hampir abu-abu / gelap: aksen netral terang
+    let accent = if vw < cnt as f32 * 0.01 {
+        [235, 235, 240]
+    } else {
+        let m = vac.iter().cloned().fold(1.0, f32::max);
+        vac.map(|c| (c / m * 235.0) as u8)
+    };
+    Ok((pm, tint, accent))
 }

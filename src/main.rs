@@ -53,6 +53,7 @@ const BLACK: [u8; 4] = [0, 0, 0, 255];
 const GREEN: [u8; 4] = [80, 220, 110, 255];
 const RED: [u8; 4] = [240, 90, 90, 255];
 const ORANGE: [u8; 4] = [255, 140, 80, 255];
+const VIOLET: [u8; 4] = [180, 140, 255, 255];
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum Page {
@@ -208,8 +209,42 @@ fn local_time() -> (String, String) {
 }
 
 /// Chip tombol berlabel (logical).
+fn mix(a: [u8; 4], b: [u8; 4], t: f32) -> [u8; 4] {
+    let m = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t) as u8;
+    [m(a[0], b[0]), m(a[1], b[1]), m(a[2], b[2]), m(a[3], b[3])]
+}
+
+/// Warna aksen dari artwork (atau ACCENT bila belum ada).
+fn art_accent(snap: &Snap) -> [u8; 4] {
+    let c = snap.accent;
+    if snap.art.is_some() && (c[0] | c[1] | c[2]) > 0 { [c[0], c[1], c[2], 255] } else { ACCENT }
+}
+
+/// Warna aksen tiap halaman: dipakai di judul, dots, hover chip, dan lantai gradient latar.
+fn page_accent(page: Page, snap: &Snap, phase: Phase) -> [u8; 4] {
+    match page {
+        Page::Media => art_accent(snap),
+        Page::Shelf => ACCENT,
+        Page::Clipboard => ORANGE,
+        Page::Todo => GREEN,
+        Page::Timer => phase_color(phase),
+        Page::Status => VIOLET,
+    }
+}
+
+/// Chip dengan gradient halus, tepi tipis, dan hover berwarna aksen.
+fn chip(ctx: &mut Ctx, r: Rect, rad: f32, hov: bool, acc: [u8; 4], a: f32) {
+    let base = if hov { mix(CHIP_HI, acc, 0.16) } else { CHIP };
+    let top = mix(base, WHITE, 0.07);
+    ctx.rrect_vgrad(r.0, r.1, r.2, r.3, rad, &[(0.0, fade(top, a)), (1.0, fade(base, a))]);
+    let edge = if hov { mix([255, 255, 255, 34], acc, 0.5) } else { [255, 255, 255, 16] };
+    ctx.rrect_stroke(r.0, r.1, r.2, r.3, rad, 1.0, fade(edge, a));
+}
+
 fn button(ctx: &mut Ctx, r: Rect, label: &str, bg: [u8; 4], fg: [u8; 4], a: f32) {
-    ctx.rrect(r.0, r.1, r.2, r.3, r.3 / 2.0, fade(bg, a));
+    let top = mix(bg, WHITE, 0.10);
+    ctx.rrect_vgrad(r.0, r.1, r.2, r.3, r.3 / 2.0, &[(0.0, fade(top, a)), (1.0, fade(bg, a))]);
+    ctx.rrect_stroke(r.0, r.1, r.2, r.3, r.3 / 2.0, 1.0, fade([255, 255, 255, 18], a));
     center(ctx, label, r.0 + r.2 / 2.0, r.1 + (r.3 - 12.0) / 2.0 - 1.0, 12.0, fade(fg, a), r.2 - 6.0, false);
 }
 
@@ -512,6 +547,7 @@ struct Snap {
     volume: f32,
     art: Option<Arc<Pixmap>>,
     tint: [u8; 3],
+    accent: [u8; 3],
     clips: Vec<Clip>,
     clips_rev: u64,
     power: Option<Power>,
@@ -548,6 +584,7 @@ impl Snap {
             volume: s.volume,
             art: s.art.clone(),
             tint: s.tint,
+            accent: s.accent,
             // hanya potongan pendek untuk tampilan
             clips: s
                 .clips
@@ -757,15 +794,34 @@ impl App {
         let ca = smoothstep((76.0 - h) / 30.0);
         let r = (h * 0.4).clamp(12.0, 30.0);
 
-        // latar: hitam, saat expanded/pill lirik ada gradient warna artwork di bawah
-        if snap.art.is_some() && (a > 0.0 || pill) {
+        // bayangan lembut di bawah notch saat expanded (saat bentuk bergerak digambar di bawah hasil clip, lihat bawah)
+        let sh = smoothstep((h - 70.0) / 50.0);
+        if !clip && sh > 0.0 {
+            ctx.shadow(x0, -r, w, h + r, r, 8.0, 5.0, 80.0 * sh);
+        }
+        let acc = page_accent(page, snap, self.pomo.phase);
+        let media_art = page == Page::Media && !inline && snap.art.is_some();
+
+        // latar: hitam; expanded -> lantai gradient warna artwork (Media) atau warna aksen halaman (lainnya)
+        if snap.art.is_some() && (a > 0.0 || pill) && (page == Page::Media || pill) {
             let tc = snap.tint;
             let k = if pill { 0.6 } else { 0.55 * a };
             let bot = [(tc[0] as f32 * k) as u8, (tc[1] as f32 * k) as u8, (tc[2] as f32 * k) as u8, 255];
             ctx.rrect_vgrad(x0, -r, w, h + r, r, &[(0.0, BLACK), (0.45, BLACK), (1.0, bot)]);
+        } else if a > 0.0 {
+            let k = 0.17 * a;
+            let bot = [(acc[0] as f32 * k) as u8 + 6, (acc[1] as f32 * k) as u8 + 6, (acc[2] as f32 * k) as u8 + 8, 255];
+            ctx.rrect_vgrad(x0, -r, w, h + r, r, &[(0.0, BLACK), (0.4, BLACK), (1.0, bot)]);
         } else {
             ctx.rrect(x0, -r, w, h + r, r, BLACK);
         }
+        // cahaya warna artwork di belakang cover (halaman Media)
+        if media_art && a > 0.0 {
+            let (adx, ay, asz) = lay::ART;
+            ctx.rrect_glow(x0, -r, w, h + r, r, x0 + adx + asz / 2.0, ay + asz / 2.0, 190.0, fade(acc, 0.30 * a));
+        }
+        // tepi kaca tipis: makin jelas saat expanded
+        ctx.rrect_stroke(x0, -r, w, h + r, r, 1.0, [255, 255, 255, (9.0 + 15.0 * a) as u8]);
 
         if a > 0.0 && inline {
             draw_inline(&mut ctx, snap, x0, w, h, a, want_pip, &mut self.inline_scroll, &mut self.inline_hits);
@@ -782,7 +838,8 @@ impl App {
             for p in PAGES {
                 let on = p == page;
                 let dw = if on { 14.0 } else { 4.0 };
-                ctx.rrect(dx, h - 9.0, dw, 4.0, 2.0, fade(if on { WHITE } else { DIM }, a));
+                let dc = if on { page_accent(p, snap, self.pomo.phase) } else { DIM };
+                ctx.rrect(dx, h - 9.0, dw, 4.0, 2.0, fade(dc, a));
                 dx += dw + 5.0;
             }
 
@@ -819,12 +876,13 @@ impl App {
 
                     let cy = lay::CTRL_Y;
                     let (lx, ly) = lay::lyric_icon(x0);
-                    icon_lyrics(&mut ctx, lx, ly, fade(if snap.has_lyrics { WHITE } else { DIM }, a));
+                    icon_lyrics(&mut ctx, lx, ly, fade(if snap.has_lyrics { acc } else { DIM }, a));
                     icon_prev(&mut ctx, cx - 46.0, cy, fade(WHITE, a));
                     icon_play(&mut ctx, cx, cy, snap.playing, fade(WHITE, a));
                     icon_next(&mut ctx, cx + 46.0, cy, fade(WHITE, a));
                 }
                 Page::Shelf => {
+                    ctx.rrect(x0 + 26.0, 10.0, 3.0, 13.0, 1.5, fade(acc, a));
                     ctx.text_b("Shelf", x0 + 34.0, 9.0, 13.0, fade(WHITE, a), 100.0);
                     if snap.shelf.is_empty() {
                         center(&mut ctx, "Drop files here", cx, 56.0, 15.0, fade(GRAY, a), mw, true);
@@ -837,11 +895,12 @@ impl App {
                     for (i, name) in snap.shelf.iter().take(8).enumerate() {
                         let (x, y, cw, chh) = lay::shelf(x0, w, i);
                         let hov = inside(self.cursor, (x, y, cw, chh));
-                        ctx.rrect(x, y, cw, chh, 8.0, fade(if hov { CHIP_HI } else { CHIP }, a));
+                        chip(&mut ctx, (x, y, cw, chh), 8.0, hov, acc, a);
                         ctx.text(name, x + 8.0, y + 7.0, 11.0, fade(WHITE, a), cw - 16.0);
                     }
                 }
                 Page::Clipboard => {
+                    ctx.rrect(x0 + 26.0, 10.0, 3.0, 13.0, 1.5, fade(acc, a));
                     ctx.text_b("Clipboard", x0 + 34.0, 9.0, 13.0, fade(WHITE, a), 120.0);
                     ctx.text("click: paste · ctrl+click: copy · right-click: remove", x0 + 108.0, 11.0, 10.5, fade(DIM, a), w - 108.0 - 34.0 - 60.0);
                     if !snap.clips.is_empty() {
@@ -853,7 +912,7 @@ impl App {
                     for (row, (i, c)) in snap.clips.iter().enumerate().skip(self.scroll).take(lay::ROWS).enumerate() {
                         let r = lay::row(x0, w, row);
                         let hov = inside(self.cursor, r);
-                        ctx.rrect(r.0, r.1, r.2, r.3, 7.0, fade(if hov { CHIP_HI } else { CHIP }, a));
+                        chip(&mut ctx, r, 7.0, hov, acc, a);
                         ctx.text(&format!("{}", i + 1), r.0 + 8.0, r.1 + 5.0, 11.0, fade(DIM, a), 20.0);
                         match c {
                             Clip::Text(t) => {
@@ -872,6 +931,7 @@ impl App {
                 }
                 Page::Todo => {
                     let open = self.todos.items.iter().filter(|t| !t.0).count();
+                    ctx.rrect(x0 + 26.0, 10.0, 3.0, 13.0, 1.5, fade(acc, a));
                     ctx.text_b("Tasks", x0 + 34.0, 9.0, 13.0, fade(WHITE, a), 80.0);
                     ctx.text(&format!("{open} open"), x0 + 80.0, 10.0, 11.5, fade(DIM, a), 80.0);
                     // donut progress: done / total (rata kanan header)
@@ -890,7 +950,8 @@ impl App {
                     let r = lay::row(x0, w, 0);
                     match &self.editing {
                         Some(buf) => {
-                            ctx.rrect(r.0, r.1, r.2, r.3, 7.0, fade([40, 52, 66, 255], a));
+                            ctx.rrect(r.0, r.1, r.2, r.3, 7.0, fade(mix([22, 22, 28, 255], acc, 0.14), a));
+                            ctx.rrect_stroke(r.0, r.1, r.2, r.3, 7.0, 1.0, fade(fade(acc, 0.55), a));
                             let shown = if buf.is_empty() { "Type a task, Enter to add, Esc to cancel" } else { buf };
                             let col = if buf.is_empty() { DIM } else { WHITE };
                             let tw = ctx.text(shown, r.0 + 26.0, r.1 + 5.0, 12.0, fade(col, a), r.2 - 34.0);
@@ -900,12 +961,15 @@ impl App {
                             }
                         }
                         None => {
-                            ctx.rrect(r.0, r.1, r.2, r.3, 7.0, fade(CHIP, a));
+                            chip(&mut ctx, r, 7.0, inside(self.cursor, r), acc, a);
                             ctx.text("+  Add a task…", r.0 + 10.0, r.1 + 5.0, 12.0, fade(GRAY, a), r.2 - 20.0);
                         }
                     }
                     for (row, (_, (done, text))) in self.todos.items.iter().enumerate().skip(self.scroll).take(lay::ROWS - 1).enumerate() {
                         let r = lay::row(x0, w, row + 1);
+                        if inside(self.cursor, r) {
+                            ctx.rrect(r.0, r.1, r.2, r.3, 7.0, fade([255, 255, 255, 12], a));
+                        }
                         icon_check(&mut ctx, r.0 + 12.0, r.1 + 12.0, *done, a);
                         ctx.text(text, r.0 + 26.0, r.1 + 5.0, 12.0, fade(if *done { DIM } else { WHITE }, a), r.2 - 56.0);
                         if inside(self.cursor, r) {
@@ -925,6 +989,7 @@ impl App {
                     center(&mut ctx, p.label(), x0 + rdx, ry + 10.0, 11.0, fade(col, a), 80.0, false);
 
                     let lx = x0 + 176.0;
+                    ctx.rrect(lx - 8.0, 10.0, 3.0, 13.0, 1.5, fade(col, a));
                     ctx.text_b(&format!("Session {}", p.done + 1), lx, 9.0, 13.0, fade(WHITE, a), 140.0);
                     let rows = [
                         ("Focus", format!("{} min", p.work)),
@@ -983,6 +1048,10 @@ impl App {
         // potong semua konten ke bentuk notch saat ini (tidak ada teks "bocor" saat animasi)
         if clip {
             win.pm.fill(tiny_skia::Color::TRANSPARENT);
+            if sh > 0.0 {
+                let mut sctx = Ctx { pm: &mut win.pm, fonts: &self.fonts, bold: &self.bold, s: win.s };
+                sctx.shadow(x0, -r, w, h + r, r, 8.0, 5.0, 80.0 * sh);
+            }
             gfx::fill_rrect_from(&mut win.pm, &layer, win.s, x0, -r, w, h + r, r);
             win.layer = Some(layer);
         } else {
@@ -1746,7 +1815,10 @@ fn draw_bar(ctx: &mut Ctx, b: Rect, snap: &Snap, a: f32) {
     ctx.rrect(b.0, b.1, b.2, b.3, 2.0, fade(TRACK, a));
     if snap.dur > 0 {
         let f = (snap.pos as f32 / snap.dur as f32).clamp(0.0, 1.0);
-        ctx.rrect(b.0, b.1, (b.2 * f).max(4.0), b.3, 2.0, fade(WHITE, a));
+        let acc = art_accent(snap);
+        let fw = (b.2 * f).max(4.0);
+        ctx.rrect_hgrad(b.0, b.1, fw, b.3, 2.0, fade(mix(acc, BLACK, 0.45), a), fade(mix(acc, WHITE, 0.25), a));
+        ctx.circle(b.0 + b.2 * f, b.1 + b.3 / 2.0, 7.5, fade(acc, 0.22 * a));
         ctx.circle(b.0 + b.2 * f, b.1 + b.3 / 2.0, 5.0, fade(WHITE, a));
     }
 }
