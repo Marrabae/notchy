@@ -34,7 +34,8 @@ jobs:
           path: dist/notchy-setup-*.exe
 
   linux:
-    runs-on: ubuntu-latest
+    # baseline glibc = Ubuntu 24.04 LTS (2.39); jangan pakai ubuntu-latest, binary jadi butuh glibc terbaru
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -45,6 +46,11 @@ jobs:
           c=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)"/\1/')
           [ "$v" = "$c" ] || { echo "tag $v != Cargo.toml $c"; exit 1; }
       - run: cargo build --release --locked
+      - name: Cek baseline glibc (maks 2.39)
+        run: |
+          max=$(objdump -T target/release/notchy | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -V | tail -1)
+          echo "glibc maksimum yang dibutuhkan binary: $max"
+          [ "$(printf '%s\n' "$max" 2.39 | sort -V | tail -1)" = "2.39" ] || { echo "binary butuh glibc $max > 2.39"; exit 1; }
       - name: Paket .deb
         run: |
           cargo install cargo-deb --locked

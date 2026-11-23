@@ -52,6 +52,8 @@ cargo build --release
 packaging/linux/install.sh --autostart   # ke ~/.local/bin + launcher + autostart (opsional)
 ```
 
+Baseline: Ubuntu 24.04 LTS (glibc 2.39) atau lebih baru; paket `.deb` menolak host dengan `libc6` lebih lama. Rilis dibuild di runner `ubuntu-24.04` supaya binary tidak butuh glibc yang lebih baru.
+
 Build butuh compiler C (untuk `ring`, TLS lirik). Runtime butuh library X11 yang di-load dinamis (`libxkbcommon-x11-0`, `libx11-6`, `libxcursor1`, `libxi6`, `libxrandr2`; sudah ada di desktop X11 umum), tanpa paket dev. Yang dipakai:
 
 | Fitur | Sumber di Linux | Paket |

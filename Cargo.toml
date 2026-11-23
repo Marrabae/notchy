@@ -1,6 +1,6 @@
 [package]
 name = "notchy"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 description = "Dynamic notch untuk Windows dan Linux (X11)"
 
@@ -25,7 +25,7 @@ copyright = "Marrabae"
 section = "utils"
 priority = "optional"
 extended-description = "Dynamic notch: now playing (MPRIS) dengan lirik, file shelf, clipboard, todo, timer Pomodoro, dan info sistem."
-depends = "libc6, libxkbcommon-x11-0, libx11-6, libxcursor1, libxi6, libxrandr2, fontconfig, xdg-utils"
+depends = "libc6 (>= 2.39), libxkbcommon-x11-0, libx11-6, libxcursor1, libxi6, libxrandr2, fontconfig, xdg-utils"
 recommends = "pulseaudio-utils | pipewire-pulse, network-manager, bluez, fonts-dejavu-core"
 assets = [
     ["target/release/notchy", "usr/bin/", "755"],
