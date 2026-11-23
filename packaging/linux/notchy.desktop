@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=notchy
+Comment=Dynamic notch: now playing, lirik, file shelf, clipboard, todo, timer
+Exec=notchy
+Icon=notchy
+Terminal=false
+Categories=Utility;
+StartupNotify=false
+X-GNOME-Autostart-enabled=true

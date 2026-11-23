@@ -1,17 +1,16 @@
 #![windows_subsystem = "windows"]
 
-mod bright;
 mod clip;
-mod devices;
-mod dragout;
 mod gfx;
 mod media;
+mod platform;
 mod state;
 mod sys;
 mod timer;
 mod todo;
 
 use gfx::{Ctx, Fonts};
+use platform::{Settings, WinKind};
 use state::{Clip, Cmd, DevKind, Device, Net, NetKind, Power, Shared, State, SysCmd};
 use std::{
     collections::hash_map::DefaultHasher,
@@ -27,9 +26,8 @@ use winit::{
     application::ApplicationHandler,
     dpi::{LogicalSize, PhysicalPosition, PhysicalSize},
     event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
-    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+    event_loop::{ActiveEventLoop, ControlFlow},
     keyboard::{Key, NamedKey},
-    platform::windows::WindowAttributesExtWindows,
     window::{CursorIcon, ResizeDirection, Window, WindowId, WindowLevel},
 };
 
@@ -204,12 +202,12 @@ fn mmss(ms: i64) -> String {
 }
 
 fn local_time() -> (String, String) {
-    let t = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
+    let t = platform::local_time();
     const D: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
     const M: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     (
-        format!("{} {} {} {}", D[t.wDayOfWeek as usize % 7], t.wDay, M[(t.wMonth as usize + 11) % 12], t.wYear),
-        format!("{:02}:{:02}", t.wHour, t.wMinute),
+        format!("{} {} {} {}", D[t.weekday as usize % 7], t.day, M[(t.month as usize + 11) % 12], t.year),
+        format!("{:02}:{:02}", t.hour, t.minute),
     )
 }
 
@@ -387,7 +385,7 @@ fn phase_color(p: Phase) -> [u8; 4] {
 // ---------------------------------------------------------------- window
 struct Win {
     window: Window,
-    hwnd: windows::Win32::Foundation::HWND,
+    hwnd: platform::WinId,
     pm: Pixmap,
     /// kanvas konten notch sebelum dipotong mask bentuk
     layer: Option<Pixmap>,
@@ -395,20 +393,19 @@ struct Win {
 }
 
 impl Win {
-    fn new(el: &ActiveEventLoop, w: f32, h: f32, pos: impl FnOnce(f32, &ActiveEventLoop) -> PhysicalPosition<i32>) -> Self {
+    fn new(el: &ActiveEventLoop, kind: WinKind, w: f32, h: f32, pos: impl FnOnce(f32, &ActiveEventLoop) -> PhysicalPosition<i32>) -> Self {
         let s = el.primary_monitor().map(|m| m.scale_factor() as f32).unwrap_or(1.0);
         let attrs = Window::default_attributes()
             .with_title("notchy")
             .with_decorations(false)
             .with_transparent(true)
             .with_resizable(false)
-            .with_skip_taskbar(true)
             .with_window_level(WindowLevel::AlwaysOnTop)
             .with_inner_size(PhysicalSize::new((w * s) as u32, (h * s) as u32))
             .with_position(pos(s, el));
-        let window = el.create_window(attrs).expect("gagal bikin window");
-        let hwnd = gfx::hwnd_of(&window);
-        gfx::make_overlay(hwnd);
+        let window = el.create_window(platform::window_attrs(attrs, kind)).expect("gagal bikin window");
+        let hwnd = platform::win_id(&window);
+        platform::make_overlay(hwnd);
         let pm = Pixmap::new((w * s) as u32, (h * s) as u32).unwrap();
         Win { window, hwnd, pm, layer: None, s }
     }
@@ -896,7 +893,7 @@ impl App {
         if self.editing.is_none() {
             self.editing = Some(String::new());
             if let Some(w) = &self.notch {
-                gfx::set_activatable(w.hwnd, true);
+                platform::set_activatable(w.hwnd, true);
             }
         }
     }
@@ -907,7 +904,7 @@ impl App {
                 self.todos.add(&t);
             }
             if let Some(w) = &self.notch {
-                gfx::set_activatable(w.hwnd, false);
+                platform::set_activatable(w.hwnd, false);
             }
             self.last_sig = 0;
         }
@@ -1341,7 +1338,7 @@ impl App {
                 self.anim_n += 1;
             }
         }
-        gfx::present(win.hwnd, &win.pm);
+        platform::present(win.hwnd, &win.pm);
     }
 
     fn draw_pip(&mut self, snap: &Snap) {
@@ -1385,7 +1382,7 @@ impl App {
             };
             draw_lyric_list(&mut ctx, snap, &st, &mut self.pip_scroll, 1.0, &mut self.pip_hits);
         }
-        gfx::present(win.hwnd, &win.pm);
+        platform::present(win.hwnd, &win.pm);
     }
 
     fn sync_pip(&mut self, el: &ActiveEventLoop) {
@@ -1397,7 +1394,7 @@ impl App {
                     x >= p.x && y >= p.y && x < p.x + z.width as i32 - 40 && y < p.y + z.height as i32 - 40
                 })
             });
-            self.pip = Some(Win::new(el, pw, ph, |s, el| {
+            self.pip = Some(Win::new(el, WinKind::Pip, pw, ph, |s, el| {
                 if let Some((x, y)) = saved {
                     return PhysicalPosition::new(x, y);
                 }
@@ -1410,14 +1407,14 @@ impl App {
             if let Some(p) = &self.pip {
                 p.window.set_resizable(true);
                 p.window.set_min_inner_size(Some(LogicalSize::new(220.0, 80.0)));
-                // winit menimpa ex-style saat set_resizable -> pasang ulang LAYERED/TOPMOST/dll
-                gfx::make_overlay(p.hwnd);
+                // winit menimpa style window saat set_resizable -> pasang ulang atribut overlay
+                platform::make_overlay(p.hwnd);
             }
             self.pip_scroll = LyricScroll::default();
             self.last_sig = 0;
         } else if !self.want_pip && self.pip.is_some() {
             if let Some(p) = &self.pip {
-                gfx::forget(p.hwnd);
+                platform::forget(p.hwnd);
             }
             self.pip = None;
         }
@@ -1518,10 +1515,10 @@ impl App {
                     let item = self.shared.lock().unwrap().clips.get(row + self.scroll).cloned();
                     if let (Some(item), Some(win)) = (item, self.notch.as_ref()) {
                         // klik = langsung paste ke field yang aktif (seperti Win+V); Ctrl+klik = salin saja
-                        let copy_only = clip::ctrl_down();
-                        let ok = clip::set(win.hwnd, &item);
+                        let copy_only = platform::clip::ctrl_down();
+                        let ok = platform::clip::set(win.hwnd, &item);
                         if ok && !copy_only {
-                            clip::paste();
+                            platform::clip::paste();
                         }
                         let msg = match (ok, copy_only) {
                             (false, _) => "Clipboard busy",
@@ -1568,9 +1565,6 @@ impl App {
             }
             Page::Status => {
                 let (vr, br) = (lay::st_volume(x0, w), lay::st_bright(x0, w));
-                let settings = |uri: &str| {
-                    let _ = std::process::Command::new("explorer.exe").arg(uri).spawn();
-                };
                 if inside(p, lay::quit(x0, w)) {
                     self.quit = true;
                 } else if inside(p, vr) {
@@ -1588,11 +1582,11 @@ impl App {
                         self.set_slider(Slider::Brightness, lay::slider(br));
                     }
                 } else if inside(p, lay::st_battery(x0, w)) {
-                    settings("ms-settings:batterysaver");
+                    platform::open_settings(Settings::Power);
                 } else if inside(p, lay::st_net(x0, w)) {
-                    settings("ms-settings:network-status");
+                    platform::open_settings(Settings::Network);
                 } else if inside(p, lay::st_devices(x0, w)) {
-                    settings("ms-settings:bluetooth");
+                    platform::open_settings(Settings::Bluetooth);
                 }
             }
         }
@@ -1640,7 +1634,7 @@ impl App {
                     self.last_click = None;
                     let path = self.shared.lock().unwrap().shelf.get(i).cloned();
                     if let Some(path) = path {
-                        let _ = std::process::Command::new("explorer.exe").arg(path).spawn();
+                        platform::open_path(&path);
                     }
                 } else {
                     self.last_click = Some((Instant::now(), i));
@@ -1675,7 +1669,7 @@ impl App {
                 let path = self.shared.lock().unwrap().shelf.get(i).cloned();
                 if let Some(path) = path {
                     // modal sampai file dilepas di Explorer/app lain
-                    let _ = dragout::drag_files(&[path]);
+                    let _ = platform::dragout::drag_files(&[path]);
                     // file yang dipindah (move) tidak ada lagi -> keluarkan dari shelf
                     self.shared.lock().unwrap().shelf.retain(|f: &PathBuf| f.exists());
                 }
@@ -2158,7 +2152,7 @@ impl ApplicationHandler for App {
         if self.notch.is_some() {
             return;
         }
-        let win = Win::new(el, WIN_W, WIN_H, |s, el| {
+        let win = Win::new(el, WinKind::Notch, WIN_W, WIN_H, |s, el| {
             let (mx, my, mw) = el
                 .primary_monitor()
                 .map(|m| (m.position().x, m.position().y, m.size().width as i32))
@@ -2288,7 +2282,7 @@ impl ApplicationHandler for App {
                         }
                     }
                     if self.vsync {
-                        gfx::wait_vsync();
+                        platform::wait_vsync();
                     }
                 } else if is_pip {
                     self.draw_pip(&snap);
@@ -2312,15 +2306,13 @@ impl ApplicationHandler for App {
             self.cliptest = false;
             let item = self.shared.lock().unwrap().clips.first().cloned();
             if let (Some(item), Some(win)) = (item, self.notch.as_ref()) {
-                let ok = clip::set(win.hwnd, &item);
+                let ok = platform::clip::set(win.hwnd, &item);
                 let _ = std::fs::write(std::env::temp_dir().join("notchy_cliptest.txt"), if ok { "ok" } else { "fail" });
             }
         }
         if let Some(msg) = self.pomo.tick() {
             self.shared.lock().unwrap().flash(msg);
-            unsafe {
-                let _ = windows::Win32::System::Diagnostics::Debug::MessageBeep(windows::Win32::UI::WindowsAndMessaging::MB_ICONASTERISK);
-            }
+            platform::beep();
         }
         let snap = Snap::take(&self.shared.lock().unwrap());
         // dipakai = sedang expanded atau ada notifikasi -> hitung ulang jeda idle peek
@@ -2426,7 +2418,7 @@ fn resize_icon(d: ResizeDirection) -> CursorIcon {
 
 // ---------------------------------------------------------------- config
 fn cfg_path() -> Option<PathBuf> {
-    std::env::var_os("APPDATA").map(|d| PathBuf::from(d).join("notchy").join("pip.cfg"))
+    platform::data_dir().map(|d| d.join("pip.cfg"))
 }
 
 struct Cfg {
@@ -2483,18 +2475,7 @@ fn load_cfg() -> Cfg {
 
 fn main() {
     // satu instance saja (startup + buka manual tidak dobel)
-    let _guard = unsafe {
-        use windows::Win32::{
-            Foundation::{GetLastError, ERROR_ALREADY_EXISTS},
-            System::Threading::CreateMutexW,
-        };
-        let h = CreateMutexW(None, true, windows::core::w!(r"Local\notchy-single-instance"));
-        // NOTCHY_DUMP (debug screenshot) boleh jalan berdampingan dengan instance utama
-        if GetLastError() == ERROR_ALREADY_EXISTS && std::env::var_os("NOTCHY_DUMP").is_none() {
-            return;
-        }
-        h
-    };
+    let Some(_guard) = platform::single_instance() else { return };
     let shared: State = Arc::new(Mutex::new(Shared::default()));
     let demo = std::env::var("NOTCHY_DEMO").ok();
     if demo.is_some() {
@@ -2502,22 +2483,23 @@ fn main() {
     }
     let (tx, rx) = mpsc::channel();
     if demo.is_none() {
-        media::spawn(shared.clone(), rx);
+        platform::media::spawn(shared.clone(), rx);
     }
     let sys_tx = sys::spawn(shared.clone());
-    let bright_tx = bright::spawn(shared.clone());
-    devices::spawn(shared.clone());
-    clip::spawn(shared.clone());
+    let bright_tx = platform::bright::spawn(shared.clone());
+    platform::devices::spawn(shared.clone());
+    platform::clip::spawn(shared.clone());
+    let font_paths = platform::fonts();
 
     let cfg = load_cfg();
-    let el = EventLoop::new().unwrap();
+    let el = platform::event_loop();
     let mut app = App {
         shared,
         tx,
         sys_tx,
         bright_tx,
-        fonts: Fonts::load(r"C:\Windows\Fonts\segoeui.ttf"),
-        bold: Fonts::load(r"C:\Windows\Fonts\segoeuib.ttf"),
+        fonts: Fonts::load(&font_paths.regular, &font_paths.fallback),
+        bold: Fonts::load(&font_paths.bold, &font_paths.fallback),
         notch: None,
         pip: None,
         page: Page::Media,

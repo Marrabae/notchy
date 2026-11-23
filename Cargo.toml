@@ -2,16 +2,37 @@
 name = "notchy"
 version = "0.2.7"
 edition = "2024"
+description = "Dynamic notch untuk Windows dan Linux (X11)"
 
 [dependencies]
 ab_glyph = "0.2.32"
 serde_json = "1.0.154"
 tiny-skia = "0.12.0"
 ureq = "3.5.2"
+winit = { version = "0.30.13", default-features = false, features = ["rwh_06"] }
+
+[target.'cfg(windows)'.dependencies]
 windows = { version = "0.62.2", features = ["Media_Control", "Foundation", "Storage_Streams", "Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_System_Power", "Win32_System_Com", "Win32_Media_Audio", "Win32_Media_Audio_Endpoints", "Win32_UI_Shell", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_UI_Shell_PropertiesSystem", "Graphics_Imaging", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_Security", "Win32_System_Ole", "Win32_System_SystemServices", "Win32_UI_Shell_Common", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Diagnostics_Debug", "Win32_Graphics_Dwm", "Win32_System_Wmi", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Devices_Enumeration", "Foundation_Collections", "Networking_Connectivity"] }
 windows-collections = "0.3"
 windows-core = "0.62"
-winit = "0.30.13"
+
+# Paket .deb: `cargo install cargo-deb && cargo build --release && cargo deb --no-build`
+# (library X11 di-load dinamis oleh winit, jadi `depends` ditulis eksplisit, bukan $auto)
+[package.metadata.deb]
+name = "notchy"
+maintainer = "Marrabae <noreply@users.noreply.github.com>"
+copyright = "Marrabae"
+section = "utils"
+priority = "optional"
+extended-description = "Dynamic notch: now playing (MPRIS) dengan lirik, file shelf, clipboard, todo, timer Pomodoro, dan info sistem."
+depends = "libc6, libxkbcommon-x11-0, libx11-6, libxcursor1, libxi6, libxrandr2, fontconfig, xdg-utils"
+recommends = "pulseaudio-utils | pipewire-pulse, network-manager, bluez, fonts-dejavu-core"
+assets = [
+    ["target/release/notchy", "usr/bin/", "755"],
+    ["packaging/linux/notchy.desktop", "usr/share/applications/", "644"],
+    ["assets/notchy.png", "usr/share/icons/hicolor/256x256/apps/", "644"],
+    ["README.md", "usr/share/doc/notchy/README", "644"],
+]
 
 [profile.release]
 opt-level = "s"
@@ -22,3 +43,12 @@ strip = true
 
 [build-dependencies]
 winresource = "0.1.34"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+arboard = { version = "3.7.0", default-features = false, features = ["image-data"] }
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
+serde = "1"
+libc = { version = "0.2.191", default-features = false }
+winit = { version = "0.30.13", default-features = false, features = ["rwh_06", "x11"] }
+x11rb = { version = "0.14.0", features = ["xtest", "shape", "xfixes", "randr"] }
+zbus = "5"

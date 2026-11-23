@@ -1,11 +1,17 @@
 ﻿; Installer notchy (Inno Setup 6)
-; Build: D:\Tools\InnoSetup\ISCC.exe installer\notchy.iss
+; Build lokal : D:\Tools\InnoSetup\ISCC.exe installer\notchy.iss
+; Build di CI  : ISCC.exe /DAppVersion=1.2.3 /DBuildDir=<folder-berisi-notchy.exe> installer\notchy.iss
 ; Hasil: dist\notchy-setup-<versi>.exe
+; AppVersion dan BuildDir bisa dioverride dari command line (/D); nilai di bawah hanya default lokal.
 
 #define AppName "notchy"
-#define AppVersion "0.2.7"
+#ifndef AppVersion
+  #define AppVersion "0.2.7"
+#endif
 #define AppExe "notchy.exe"
-#define BuildDir "D:\Ravelware\cargo-target\notchy\release"
+#ifndef BuildDir
+  #define BuildDir "D:\Ravelware\cargo-target\notchy\release"
+#endif
 
 [Setup]
 AppId={{6F2C7A1E-4B8D-4E7B-9A3C-2D5E8F1B0C47}

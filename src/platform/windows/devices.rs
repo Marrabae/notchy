@@ -42,24 +42,7 @@ fn num(v: &IInspectable) -> Option<u32> {
 }
 
 fn kind_of(name: &str, cod: Option<u32>) -> DevKind {
-    // major device class: 2 = phone, 4 = audio/video, 5 = peripheral (HID)
-    match cod.map(|c| (c >> 8) & 0x1F) {
-        Some(2) => return DevKind::Phone,
-        Some(4) => return DevKind::Audio,
-        Some(5) => return DevKind::Input,
-        _ => {}
-    }
-    let n = name.to_lowercase();
-    let has = |ks: &[&str]| ks.iter().any(|k| n.contains(k));
-    if has(&["bud", "pod", "head", "ear", "bass", "speaker", "audio", "sound", "jbl", "wh-", "wf-"]) {
-        DevKind::Audio
-    } else if has(&["mouse", "keyboard", "keys", "controller", "gamepad", "pen", "mx "]) {
-        DevKind::Input
-    } else if has(&["phone", "galaxy", "pixel", "redmi", "xiaomi", "oppo", "vivo"]) {
-        DevKind::Phone
-    } else {
-        DevKind::Other
-    }
+    DevKind::guess(name, cod)
 }
 
 fn battery_of(container: GUID) -> Option<u8> {
@@ -126,16 +109,7 @@ pub fn spawn(state: State) {
         let mut first = true;
         loop {
             if let Some(list) = scan(&mut cache) {
-                let mut s = state.lock().unwrap();
-                if !first {
-                    if let Some(d) = list.iter().find(|d| !s.devices.iter().any(|o| o.id == d.id)) {
-                        s.flash(format!("Connected · {}", d.name));
-                    } else if let Some(d) = s.devices.iter().find(|o| !list.iter().any(|d| d.id == o.id)) {
-                        let msg = format!("Disconnected · {}", d.name);
-                        s.flash(msg);
-                    }
-                }
-                s.devices = list;
+                state.lock().unwrap().update_devices(list, first);
                 first = false;
             }
             thread::sleep(Duration::from_secs(6));

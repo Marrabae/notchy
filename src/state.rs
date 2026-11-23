@@ -82,6 +82,30 @@ pub enum DevKind {
     Other,
 }
 
+impl DevKind {
+    /// Tebak jenis perangkat dari Class of Device Bluetooth (kalau ada), lalu dari namanya.
+    pub fn guess(name: &str, cod: Option<u32>) -> DevKind {
+        // major device class: 2 = phone, 4 = audio/video, 5 = peripheral (HID)
+        match cod.map(|c| (c >> 8) & 0x1F) {
+            Some(2) => return DevKind::Phone,
+            Some(4) => return DevKind::Audio,
+            Some(5) => return DevKind::Input,
+            _ => {}
+        }
+        let n = name.to_lowercase();
+        let has = |ks: &[&str]| ks.iter().any(|k| n.contains(k));
+        if has(&["bud", "pod", "head", "ear", "bass", "speaker", "audio", "sound", "jbl", "wh-", "wf-"]) {
+            DevKind::Audio
+        } else if has(&["mouse", "keyboard", "keys", "controller", "gamepad", "pen", "mx "]) {
+            DevKind::Input
+        } else if has(&["phone", "galaxy", "pixel", "redmi", "xiaomi", "oppo", "vivo"]) {
+            DevKind::Phone
+        } else {
+            DevKind::Other
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Device {
     /// DeviceInstanceId (unik walau nama sama)
@@ -140,5 +164,18 @@ impl Shared {
 
     pub fn flash(&mut self, text: String) {
         self.activity = Some((text, Instant::now()));
+    }
+
+    /// Ganti daftar perangkat Bluetooth; kalau bukan scan pertama, tampilkan notifikasi tersambung/terputus.
+    pub fn update_devices(&mut self, list: Vec<Device>, first: bool) {
+        if !first {
+            if let Some(d) = list.iter().find(|d| !self.devices.iter().any(|o| o.id == d.id)) {
+                self.flash(format!("Connected · {}", d.name));
+            } else if let Some(d) = self.devices.iter().find(|o| !list.iter().any(|d| d.id == o.id)) {
+                let msg = format!("Disconnected · {}", d.name);
+                self.flash(msg);
+            }
+        }
+        self.devices = list;
     }
 }

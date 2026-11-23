@@ -1,119 +1,83 @@
-use crate::state::{Cmd, State};
-use std::{
-    sync::mpsc::Receiver,
-    thread,
-    time::{Duration, Instant},
-};
-use std::sync::Arc;
+//! Logika media yang dipakai semua platform: sinkronisasi ke state, artwork (tint/aksen), lirik lrclib.
+use crate::state::State;
+use std::{sync::Arc, thread, time::Instant};
 use tiny_skia::Pixmap;
-use windows::{
-    Graphics::Imaging::{
-        BitmapAlphaMode, BitmapBounds, BitmapDecoder, BitmapInterpolationMode, BitmapPixelFormat, BitmapTransform,
-        ColorManagementMode, ExifOrientationMode,
-    },
-    Media::Control::{
-        GlobalSystemMediaTransportControlsSessionMediaProperties as Props,
-        GlobalSystemMediaTransportControlsSessionManager as Manager,
-        GlobalSystemMediaTransportControlsSessionPlaybackStatus as PStatus,
-    },
-    Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED},
-};
 
-/// Thread polling SMTC (Spotify, browser, dll) + terima perintah kontrol.
-pub fn spawn(state: State, rx: Receiver<Cmd>) {
-    thread::spawn(move || {
-        unsafe {
-            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-        }
-        let mut last_key = String::new();
-        let mut art_tries = 0u8;
-        loop {
-            if let Err(e) = poll_once(&state, &rx, &mut last_key, &mut art_tries) {
-                // tidak ada sesi media -> kosongkan
-                let mut s = state.lock().unwrap();
-                if s.playing || !s.title.is_empty() {
-                    s.playing = false;
-                    s.title.clear();
-                    s.artist.clear();
-                    s.lyrics.clear();
-                    s.art = None;
-                }
-                let _ = e;
-                last_key.clear();
-            }
-            thread::sleep(Duration::from_millis(500));
-        }
-    });
+/// Sisi artwork (px).
+pub const ART: u32 = 128;
+
+/// Snapshot lagu dari backend platform (SMTC / MPRIS).
+pub struct Track {
+    pub title: String,
+    pub artist: String,
+    pub playing: bool,
+    pub pos_ms: i64,
+    pub dur_ms: i64,
 }
 
-fn poll_once(state: &State, rx: &Receiver<Cmd>, last_key: &mut String, art_tries: &mut u8) -> windows::core::Result<()> {
-    let mgr = Manager::RequestAsync()?.join()?;
-    let session = mgr.GetCurrentSession()?;
+pub type Art = (Pixmap, [u8; 3], [u8; 3]);
 
-    while let Ok(cmd) = rx.try_recv() {
-        let _ = match cmd {
-            Cmd::PlayPause => session.TryTogglePlayPauseAsync()?.join(),
-            Cmd::Next => session.TrySkipNextAsync()?.join(),
-            Cmd::Prev => session.TrySkipPreviousAsync()?.join(),
-            Cmd::Seek(ms) => session.TryChangePlaybackPositionAsync(ms.max(0) * 10_000)?.join(),
-        };
-    }
+/// Status polling: lagu terakhir + jumlah percobaan memuat artwork.
+#[derive(Default)]
+pub struct Tracker {
+    last_key: String,
+    art_tries: u8,
+}
 
-    let props = session.TryGetMediaPropertiesAsync()?.join()?;
-    let title = props.Title()?.to_string();
-    let artist = props.Artist()?.to_string();
-    let tl = session.GetTimelineProperties()?;
-    let playing = session.GetPlaybackInfo()?.PlaybackStatus()? == PStatus::Playing;
-    // Position dari SMTC bisa basi (app hanya update saat state berubah):
-    // tambahkan selisih waktu sejak LastUpdatedTime (FILETIME, 100ns sejak 1601).
-    let last = tl.LastUpdatedTime()?.UniversalTime;
-    let now_ft = (std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() / 100)
-        .unwrap_or(0) as i64)
-        + 116_444_736_000_000_000;
-    let drift = if playing && last > 0 { ((now_ft - last) / 10_000).clamp(0, 6 * 3_600_000) } else { 0 };
-    let pos = tl.Position()?.Duration / 10_000 + drift;
-    let end = tl.EndTime()?.Duration / 10_000;
-
-    let key = format!("{artist}\u{1}{title}");
-    let changed = key != *last_key;
-    {
+impl Tracker {
+    /// Tidak ada sesi media -> kosongkan state.
+    pub fn clear(&mut self, state: &State) {
         let mut s = state.lock().unwrap();
-        s.title = title.clone();
-        s.artist = artist.clone();
-        s.playing = playing;
-        s.pos_ms = pos;
-        s.dur_ms = end;
-        s.stamp = Some(Instant::now());
-        if changed {
+        if s.playing || !s.title.is_empty() {
+            s.playing = false;
+            s.title.clear();
+            s.artist.clear();
             s.lyrics.clear();
             s.art = None;
-            *art_tries = 0;
         }
+        self.last_key.clear();
     }
-    if *art_tries < 8 {
-        *art_tries += 1;
-        if let Ok((pm, tint, accent)) = load_art(&props) {
-            *art_tries = u8::MAX;
+
+    /// Tulis lagu ke state; muat artwork (maks 8 percobaan per lagu) dan ambil lirik saat lagu berganti.
+    pub fn publish(&mut self, state: &State, t: &Track, load_art: impl FnOnce() -> Option<Art>) {
+        let key = format!("{}\u{1}{}", t.artist, t.title);
+        let changed = key != self.last_key;
+        {
             let mut s = state.lock().unwrap();
-            s.art = Some(Arc::new(pm));
-            s.tint = tint;
-            s.accent = accent;
+            s.title = t.title.clone();
+            s.artist = t.artist.clone();
+            s.playing = t.playing;
+            s.pos_ms = t.pos_ms;
+            s.dur_ms = t.dur_ms;
+            s.stamp = Some(Instant::now());
+            if changed {
+                s.lyrics.clear();
+                s.art = None;
+                self.art_tries = 0;
+            }
+        }
+        if self.art_tries < 8 {
+            self.art_tries += 1;
+            if let Some((pm, tint, accent)) = load_art() {
+                self.art_tries = u8::MAX;
+                let mut s = state.lock().unwrap();
+                s.art = Some(Arc::new(pm));
+                s.tint = tint;
+                s.accent = accent;
+            }
+        }
+        if changed {
+            self.last_key = key;
+            let (st, title, artist, end) = (state.clone(), t.title.clone(), t.artist.clone(), t.dur_ms);
+            thread::spawn(move || {
+                let lyrics = fetch_lyrics(&artist, &title, end / 1000).unwrap_or_default();
+                let mut s = st.lock().unwrap();
+                if s.title == title && s.artist == artist {
+                    s.lyrics = lyrics;
+                }
+            });
         }
     }
-    if changed {
-        *last_key = key;
-        let st = state.clone();
-        thread::spawn(move || {
-            let lyrics = fetch_lyrics(&artist, &title, end / 1000).unwrap_or_default();
-            let mut s = st.lock().unwrap();
-            if s.title == title && s.artist == artist {
-                s.lyrics = lyrics;
-            }
-        });
-    }
-    Ok(())
 }
 
 /// Ambil lirik tersinkron (LRC) dari lrclib.net. Hanya artist/judul/durasi yang dikirim.
@@ -223,43 +187,23 @@ fn parse_lrc(lrc: &str) -> Vec<(i64, String)> {
     out
 }
 
-/// Ambil thumbnail dari SMTC, crop tengah jadi kotak 128px (RGBA premultiplied) + warna rata-rata.
-fn load_art(props: &Props) -> windows::core::Result<(Pixmap, [u8; 3], [u8; 3])> {
-    const S: u32 = 128;
-    let stream = props.Thumbnail()?.OpenReadAsync()?.join()?;
-    let dec = BitmapDecoder::CreateAsync(&stream)?.join()?;
-    let (w, h) = (dec.PixelWidth()?, dec.PixelHeight()?);
-    let m = w.min(h).max(1);
-    let (sw, sh) = ((w * S).div_ceil(m), (h * S).div_ceil(m));
-    let tf = BitmapTransform::new()?;
-    tf.SetScaledWidth(sw)?;
-    tf.SetScaledHeight(sh)?;
-    tf.SetInterpolationMode(BitmapInterpolationMode::Fant)?;
-    tf.SetBounds(BitmapBounds { X: (sw - S) / 2, Y: (sh - S) / 2, Width: S, Height: S })?;
-    let pd = dec
-        .GetPixelDataTransformedAsync(
-            BitmapPixelFormat::Rgba8,
-            BitmapAlphaMode::Premultiplied,
-            &tf,
-            ExifOrientationMode::RespectExifOrientation,
-            ColorManagementMode::DoNotColorManage,
-        )?
-        .join()?;
-    let data = pd.DetachPixelData()?;
-    let n = (S * S * 4) as usize;
+/// Pixmap ART x ART dari data RGBA premultiplied + warna rata-rata (tint) + warna paling hidup (aksen).
+pub fn finish_art(data: &[u8]) -> Option<Art> {
+    let n = (ART * ART * 4) as usize;
     if data.len() < n {
-        return Err(windows::core::Error::empty());
+        return None;
     }
-    let mut pm = Pixmap::new(S, S).unwrap();
-    pm.data_mut().copy_from_slice(&data[..n]);
+    let data = &data[..n];
+    let mut pm = Pixmap::new(ART, ART)?;
+    pm.data_mut().copy_from_slice(data);
 
     let mut acc = [0u64; 3];
-    for px in data[..n].chunks_exact(4) {
+    for px in data.chunks_exact(4) {
         for k in 0..3 {
             acc[k] += px[k] as u64;
         }
     }
-    let cnt = (S * S) as u64;
+    let cnt = (ART * ART) as u64;
     let avg = [acc[0] / cnt, acc[1] / cnt, acc[2] / cnt];
     // normalisasi: kanal tertinggi = 150 agar tint tetap kelihatan tapi tidak menyilaukan
     let mx = (*avg.iter().max().unwrap()).max(1) as f32;
@@ -267,7 +211,7 @@ fn load_art(props: &Props) -> windows::core::Result<(Pixmap, [u8; 3], [u8; 3])> 
 
     // aksen: rata-rata berbobot saturasi² x kecerahan -> warna "paling hidup" artwork (bukan rata-rata keruh)
     let (mut vac, mut vw) = ([0f32; 3], 0f32);
-    for px in data[..n].chunks_exact(4) {
+    for px in data.chunks_exact(4) {
         let (r, g, b) = (px[0] as f32, px[1] as f32, px[2] as f32);
         let (hi, lo) = (r.max(g).max(b), r.min(g).min(b));
         if hi < 40.0 {
@@ -287,5 +231,5 @@ fn load_art(props: &Props) -> windows::core::Result<(Pixmap, [u8; 3], [u8; 3])> 
         let m = vac.iter().cloned().fold(1.0, f32::max);
         vac.map(|c| (c / m * 235.0) as u8)
     };
-    Ok((pm, tint, accent))
+    Some((pm, tint, accent))
 }

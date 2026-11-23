@@ -1,4 +1,4 @@
-//! Daftar tugas sederhana, disimpan di %APPDATA%\notchy\todos.txt ("x<TAB>teks" = selesai).
+//! Daftar tugas sederhana, disimpan di <data_dir>/todos.txt ("x<TAB>teks" = selesai).
 use std::path::PathBuf;
 
 #[derive(Default)]
@@ -7,7 +7,7 @@ pub struct Todos {
 }
 
 fn path() -> Option<PathBuf> {
-    std::env::var_os("APPDATA").map(|d| PathBuf::from(d).join("notchy").join("todos.txt"))
+    crate::platform::data_dir().map(|d| d.join("todos.txt"))
 }
 
 impl Todos {
