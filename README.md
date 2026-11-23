@@ -19,6 +19,7 @@ Dynamic notch untuk Windows, ditulis dengan Rust (winit + tiny-skia + windows-rs
 - Tepi kaca tipis, shadow lembut, chip bergradient dengan hover berwarna
 - Animasi: spring buka/tutup, geser antar halaman, item muncul berurutan, centang todo, tombol media memantul saat ditekan
 - Empty state dengan drop zone untuk Shelf
+- Mode peek: saat idle notch hanya tab 10px dengan penanda (garis aksen saat lagu main, progres saat timer jalan); hover untuk membuka. Aktifkan lewat ikon di pojok kanan bawah halaman Media
 
 ## Build
 

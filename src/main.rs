@@ -41,6 +41,7 @@ const PIP_H: f32 = 160.0;
 const EXP: (f32, f32) = (460.0, 162.0); // expanded biasa
 const LYR: (f32, f32) = (580.0, 146.0); // expanded + lirik inline
 const STA: (f32, f32) = (520.0, 198.0); // halaman system info
+const PEEK: (f32, f32) = (120.0, 10.0); // mode peek: tab kecil penanda notch aktif
 
 const WHITE: [u8; 4] = [255, 255, 255, 255];
 const GRAY: [u8; 4] = [150, 150, 158, 255];
@@ -93,6 +94,10 @@ mod lay {
     }
     pub fn lyric_icon(x0: f32) -> (f32, f32) {
         (x0 + 60.0, CTRL_Y)
+    }
+    /// tombol mode peek (kanan, simetris dengan ikon lirik)
+    pub fn peek_icon(x0: f32, w: f32) -> (f32, f32) {
+        (x0 + w - 60.0, CTRL_Y)
     }
     pub fn shelf(x0: f32, w: f32, i: usize) -> Rect {
         let cw = (w - 68.0 - 3.0 * 6.0) / 4.0;
@@ -268,6 +273,12 @@ fn icon_play(ctx: &mut Ctx, x: f32, y: f32, k: f32, playing: bool, c: [u8; 4]) {
     } else {
         ctx.poly(&zoom(x, y, k, [(x - 5.0, y - 8.0), (x - 5.0, y + 8.0), (x + 8.0, y)]), c);
     }
+}
+/// Ikon mode peek: layar dengan tab di tengah atas; menyala (aksen) saat aktif.
+fn icon_peek(ctx: &mut Ctx, x: f32, y: f32, on: bool, c_on: [u8; 4], c_off: [u8; 4]) {
+    let c = if on { c_on } else { c_off };
+    ctx.rrect_stroke(x - 9.0, y - 6.5, 18.0, 13.0, 3.5, 1.6, c);
+    ctx.rrect(x - 4.5, y - 6.5, 9.0, 4.0, 2.0, c);
 }
 /// Gelembung kutipan (ikon lirik)
 fn icon_lyrics(ctx: &mut Ctx, x: f32, y: f32, c: [u8; 4]) {
@@ -763,6 +774,8 @@ struct App {
     pip: Option<Win>,
     page: Page,
     lyrics_inline: bool,
+    /// mode peek: saat idle notch hanya tab 10px (hover untuk membuka)
+    peek: bool,
     want_pip: bool,
     hover: bool,
     file_hover: bool,
@@ -825,7 +838,7 @@ impl App {
 
     /// Collapsed + mode lirik aktif: pill lebar berisi baris lirik saat ini.
     fn lyric_pill(&self, snap: &Snap) -> bool {
-        !self.expanded() && snap.activity.is_none() && self.lyrics_inline && !snap.title.is_empty()
+        !self.expanded() && !self.peek && snap.activity.is_none() && self.lyrics_inline && !snap.title.is_empty()
     }
 
     fn target(&self, snap: &Snap) -> (f32, f32) {
@@ -841,6 +854,8 @@ impl App {
             (280.0, 44.0)
         } else if self.lyric_pill(snap) {
             (380.0, 32.0)
+        } else if self.peek {
+            PEEK
         } else {
             (230.0, 32.0)
         }
@@ -919,7 +934,7 @@ impl App {
             std::mem::replace(&mut win.pm, Pixmap::new(1, 1).unwrap())
         };
         layer.fill(tiny_skia::Color::TRANSPARENT);
-        let (w, h) = (self.w.cur.max(40.0), self.h.cur.max(20.0));
+        let (w, h) = (self.w.cur.max(40.0), self.h.cur.max(8.0));
         let x0 = (WIN_W - w) / 2.0;
         let mut ctx = Ctx { pm: &mut layer, fonts: &self.fonts, bold: &self.bold, s: win.s };
         // fade konten: expanded muncul setelah notch cukup besar, konten collapsed muncul saat hampir kecil
@@ -944,6 +959,11 @@ impl App {
         if !clip && sh > 0.0 {
             ctx.shadow(x0, -r, w, h + r, r, 8.0, 5.0, 80.0 * sh);
         }
+        // mode peek: area tangkap-mouse hampir transparan (alpha 1) di sekitar tab agar mudah di-hover
+        let pad = self.peek && h < 40.0;
+        if !clip && pad {
+            ctx.rrect(x0 - 24.0, -r, w + 48.0, h + r + 6.0, r, [0, 0, 0, 1]);
+        }
         let acc = page_accent(page, snap, self.pomo.phase);
         let media_art = page == Page::Media && !inline && snap.art.is_some();
 
@@ -967,6 +987,21 @@ impl App {
         }
         // tepi kaca tipis: makin jelas saat expanded
         ctx.rrect_stroke(x0, -r, w, h + r, r, 1.0, [255, 255, 255, (9.0 + 15.0 * a) as u8]);
+        // penanda di tab peek: timer berjalan = progres fase, lagu main = aksen artwork berdenyut, selain itu garis redup
+        let nk = smoothstep((20.0 - h) / 10.0);
+        if self.peek && nk > 0.0 && snap.activity.is_none() {
+            let (bw, bh) = (28.0, 2.5);
+            let (bx, by) = (x0 + w / 2.0 - bw / 2.0, h - 5.5);
+            let p = &self.pomo;
+            if p.active() {
+                ctx.rrect(bx, by, bw, bh, 1.25, fade([255, 255, 255, 40], nk));
+                ctx.rrect(bx, by, (bw * p.progress()).max(2.5), bh, 1.25, fade(phase_color(p.phase), nk));
+            } else if snap.playing {
+                ctx.rrect(bx, by, bw, bh, 1.25, fade(art_accent(snap), nk * (0.65 + 0.3 * (t * 2.5).sin())));
+            } else {
+                ctx.rrect(bx, by, bw, bh, 1.25, fade([255, 255, 255, 60], nk));
+            }
+        }
 
         if a > 0.0 && inline {
             draw_inline(&mut ctx, snap, x0, w, h, a, want_pip, &mut self.inline_scroll, &mut self.inline_hits);
@@ -1030,6 +1065,8 @@ impl App {
                     let cy = lay::CTRL_Y;
                     let (lx, ly) = lay::lyric_icon(x0);
                     icon_lyrics(&mut ctx, lx, ly, fade(if snap.has_lyrics { acc } else { DIM }, a));
+                    let (pkx, pky) = lay::peek_icon(x0, w);
+                    icon_peek(&mut ctx, pkx, pky, self.peek, fade(acc, a), fade(DIM, a));
                     icon_prev(&mut ctx, cx - 46.0, cy, self.fx.pulse_k(0), fade(WHITE, a));
                     icon_play(&mut ctx, cx, cy, self.fx.pulse_k(1), snap.playing, fade(WHITE, a));
                     icon_next(&mut ctx, cx + 46.0, cy, self.fx.pulse_k(2), fade(WHITE, a));
@@ -1264,9 +1301,14 @@ impl App {
         // potong semua konten ke bentuk notch saat ini (tidak ada teks "bocor" saat animasi)
         if clip {
             win.pm.fill(tiny_skia::Color::TRANSPARENT);
-            if sh > 0.0 {
+            if sh > 0.0 || pad {
                 let mut sctx = Ctx { pm: &mut win.pm, fonts: &self.fonts, bold: &self.bold, s: win.s };
-                sctx.shadow(x0, -r, w, h + r, r, 8.0, 5.0, 80.0 * sh);
+                if sh > 0.0 {
+                    sctx.shadow(x0, -r, w, h + r, r, 8.0, 5.0, 80.0 * sh);
+                }
+                if pad {
+                    sctx.rrect(x0 - 24.0, -r, w + 48.0, h + r + 6.0, r, [0, 0, 0, 1]);
+                }
             }
             gfx::fill_rrect_from(&mut win.pm, &layer, win.s, x0, -r, w, h + r, r);
             win.layer = Some(layer);
@@ -1435,6 +1477,9 @@ impl App {
                 if near(p, lay::lyric_icon(x0), 14.0) {
                     self.lyrics_inline = true;
                     self.inline_scroll = LyricScroll::default();
+                    self.mark_dirty();
+                } else if near(p, lay::peek_icon(x0, w), 14.0) {
+                    self.peek = !self.peek;
                     self.mark_dirty();
                 } else if near(p, (cx - 46.0, cy), 15.0) {
                     self.fx.pulse = Some((0, Instant::now()));
@@ -1726,7 +1771,7 @@ impl App {
         if let Some((x, y)) = self.pip_pos {
             out += &format!("pip_x={x}\npip_y={y}\n");
         }
-        out += &format!("lyrics={}\n", self.lyrics_inline as u8);
+        out += &format!("lyrics={}\npeek={}\n", self.lyrics_inline as u8, self.peek as u8);
         let p_ = &self.pomo;
         out += &format!("pomo_work={}\npomo_break={}\npomo_long={}\npomo_every={}\n", p_.work, p_.brk, p_.long, p_.every);
         let _ = std::fs::write(p, out);
@@ -2287,7 +2332,7 @@ impl ApplicationHandler for App {
         let mut hs = DefaultHasher::new();
         (&snap.title, &snap.artist, snap.playing, snap.pos / 1000, snap.idx, &snap.activity, &snap.shelf).hash(&mut hs);
         (snap.battery, (snap.volume * 100.0) as i32, snap.has_lyrics, snap.art.as_ref().map(|a| Arc::as_ptr(a) as usize)).hash(&mut hs);
-        (self.hover, self.file_hover, self.want_pip, self.pip.is_some(), self.page, self.lyrics_inline).hash(&mut hs);
+        (self.hover, self.file_hover, self.want_pip, self.pip.is_some(), self.page, self.lyrics_inline, self.peek).hash(&mut hs);
         ((self.pip_font * 10.0) as i32, self.pip_size.0 as i32, self.pip_size.1 as i32, local_time().1).hash(&mut hs);
         (snap.clips.len(), snap.clips_rev, self.scroll, &self.editing, self.todos.items.len()).hash(&mut hs);
         (self.pomo.left().as_secs(), self.pomo.running(), self.pomo.phase).hash(&mut hs);
@@ -2376,12 +2421,13 @@ struct Cfg {
     pip_font: f32,
     pip_pos: Option<(i32, i32)>,
     lyrics: bool,
+    peek: bool,
     pomo: (u32, u32, u32, u32),
 }
 
 /// Format baris `key=value`. Format lama "w h font x y" tetap terbaca.
 fn load_cfg() -> Cfg {
-    let mut c = Cfg { pip_size: (PIP_W, PIP_H), pip_font: 1.0, pip_pos: None, lyrics: false, pomo: (25, 5, 15, 4) };
+    let mut c = Cfg { pip_size: (PIP_W, PIP_H), pip_font: 1.0, pip_pos: None, lyrics: false, peek: false, pomo: (25, 5, 15, 4) };
     let Some(t) = cfg_path().and_then(|p| std::fs::read_to_string(p).ok()) else { return c };
     let (mut x, mut y) = (None, None);
     if t.contains('=') {
@@ -2396,6 +2442,7 @@ fn load_cfg() -> Cfg {
                 "pip_x" => x = v.parse().ok(),
                 "pip_y" => y = v.parse().ok(),
                 "lyrics" => c.lyrics = v == "1",
+                "peek" => c.peek = v == "1",
                 "pomo_work" => c.pomo.0 = num(25),
                 "pomo_break" => c.pomo.1 = num(5),
                 "pomo_long" => c.pomo.2 = num(15),
@@ -2466,6 +2513,7 @@ fn main() {
             Some(_) => true,
             None => cfg.lyrics || std::env::var("NOTCHY_EXPAND").is_ok_and(|v| v == "lyrics"),
         },
+        peek: cfg.peek || std::env::var_os("NOTCHY_PEEK").is_some(),
         want_pip: false,
         hover: false,
         file_hover: demo.as_deref() == Some("drop"),
