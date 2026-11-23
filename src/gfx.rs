@@ -315,6 +315,22 @@ impl Ctx<'_> {
         }
     }
 
+    /// Tepi rounded rect putus-putus (drop zone). `dash`/`gap` dalam logical px.
+    #[allow(clippy::too_many_arguments)]
+    pub fn rrect_dashed(&mut self, x: f32, y: f32, w: f32, h: f32, r: f32, width: f32, dash: f32, gap: f32, c: Rgba) {
+        let k = width / 2.0;
+        let Some(path) = self.rrect_path(x + k, y + k, w - width, h - width, r - k) else { return };
+        let mut p = Paint::default();
+        p.set_color_rgba8(c[0], c[1], c[2], c[3]);
+        p.anti_alias = true;
+        let st = tiny_skia::Stroke {
+            width: width * self.s,
+            dash: tiny_skia::StrokeDash::new(vec![dash * self.s, gap * self.s], 0.0),
+            ..Default::default()
+        };
+        self.pm.stroke_path(&path, &p, &st, Transform::identity(), None);
+    }
+
     fn stroke(&mut self, path: &Path, width: f32, c: Rgba) {
         let mut p = Paint::default();
         p.set_color_rgba8(c[0], c[1], c[2], c[3]);

@@ -297,6 +297,33 @@ fn icon_bars(ctx: &mut Ctx, x: f32, y_bottom: f32, h: f32, t: f32, playing: bool
         ctx.rrect(x + i as f32 * 5.0, y_bottom - bh, 3.0, bh, 1.5, c);
     }
 }
+/// Visualizer 7 batang untuk halaman Media: dua gelombang sinus bertumpuk agar gerak terasa organik.
+fn visualizer(ctx: &mut Ctx, x: f32, y_bottom: f32, h: f32, t: f32, playing: bool, c: [u8; 4]) {
+    const SPD: [f32; 7] = [6.1, 8.3, 5.2, 9.1, 6.8, 7.7, 5.6];
+    const PH: [f32; 7] = [0.0, 1.3, 2.4, 3.6, 4.5, 5.4, 6.1];
+    for i in 0..7 {
+        let k = if playing {
+            let s = (t * SPD[i] + PH[i]).sin() * 0.6 + (t * SPD[i] * 0.43 + PH[i] * 1.7).sin() * 0.4;
+            (s * 0.5 + 0.5) * 0.88 + 0.12
+        } else {
+            0.14
+        };
+        let bh = (h * k).max(3.0);
+        ctx.rrect(x + i as f32 * 5.5, y_bottom - bh, 3.0, bh, 1.5, c);
+    }
+}
+
+/// Header halaman seragam: pill aksen + judul tebal + subjudul redup. Mengembalikan x akhir.
+fn head(ctx: &mut Ctx, x0: f32, title: &str, sub: &str, acc: [u8; 4], a: f32) -> f32 {
+    ctx.rrect(x0 + 26.0, 10.0, 3.0, 13.0, 1.5, fade(acc, a));
+    let tw = ctx.text_b(title, x0 + 34.0, 9.0, 13.0, fade(WHITE, a), 140.0);
+    let mut x = x0 + 34.0 + tw;
+    if !sub.is_empty() {
+        x += 8.0 + ctx.text(sub, x + 8.0, 10.0, 11.5, fade(DIM, a), 100.0);
+    }
+    x
+}
+
 /// Cincin baterai: busur = persen, petir di tengah saat charging.
 fn icon_battery_ring(ctx: &mut Ctx, x: f32, y: f32, pct: u8, chg: bool, a: f32) {
     let col = fade(if chg { GREEN } else if pct <= 20 { RED } else { WHITE }, a);
@@ -965,19 +992,20 @@ impl App {
                         icon_battery(&mut ctx, sx, 12.0, p, chg, a);
                         sx += 32.0;
                     }
-                    sx += ctx.text(&date, sx, 9.0, 12.5, fade(GRAY, a), 160.0) + 8.0;
-                    ctx.text_b(&time, sx, 9.0, 12.5, fade(WHITE, a), 60.0);
-                    icon_bars(&mut ctx, x0 + w - 52.0, 22.0, 12.0, t, snap.playing, fade(GRAY, a));
+                    // metadata (tanggal/jam) paling redup; judul dominan, artis menengah
+                    sx += ctx.text(&date, sx, 9.0, 12.0, fade(mix(GRAY, DIM, 0.55), a), 160.0) + 8.0;
+                    ctx.text_b(&time, sx, 9.0, 12.0, fade(GRAY, a), 60.0);
+                    visualizer(&mut ctx, x0 + w - 70.0, 24.0, 16.0, t, snap.playing, fade(if snap.playing { acc } else { DIM }, a));
 
                     let title = if snap.title.is_empty() { "Nothing playing" } else { &snap.title };
-                    ctx.text_b(title, tx, 36.0, 16.0, fade(WHITE, a), tw);
-                    ctx.text(&snap.artist, tx, 58.0, 12.0, fade(GRAY, a), tw);
+                    ctx.text_b(title, tx, 33.0, 17.5, fade(WHITE, a), tw);
+                    ctx.text(&snap.artist, tx, 57.0, 12.5, fade(GRAY, a), tw);
 
                     let py = lay::PROG_Y;
-                    ctx.text(&mmss(snap.pos), x0 + 34.0, py, 13.0, fade(WHITE, a), 50.0);
+                    ctx.text(&mmss(snap.pos), x0 + 34.0, py, 12.5, fade(mix(WHITE, GRAY, 0.25), a), 50.0);
                     let rem = format!("-{}", mmss(snap.dur - snap.pos));
-                    let rw = text_w(&ctx, &rem, 13.0, false);
-                    ctx.text(&rem, x0 + w - 34.0 - rw, py, 13.0, fade(WHITE, a), 60.0);
+                    let rw = text_w(&ctx, &rem, 12.5, false);
+                    ctx.text(&rem, x0 + w - 34.0 - rw, py, 12.5, fade(GRAY, a), 60.0);
                     draw_bar(&mut ctx, lay::bar(x0, w), snap, a);
 
                     let cy = lay::CTRL_Y;
@@ -988,11 +1016,28 @@ impl App {
                     icon_next(&mut ctx, cx + 46.0, cy, fade(WHITE, a));
                 }
                 Page::Shelf => {
-                    ctx.rrect(x0 + 26.0, 10.0, 3.0, 13.0, 1.5, fade(acc, a));
-                    ctx.text_b("Shelf", x0 + 34.0, 9.0, 13.0, fade(WHITE, a), 100.0);
+                    let n = snap.shelf.len();
+                    let sub = match n {
+                        0 => String::new(),
+                        1 => "1 item".to_string(),
+                        _ => format!("{n} items"),
+                    };
+                    head(&mut ctx, x0, "Shelf", &sub, acc, a);
                     if snap.shelf.is_empty() {
-                        center(&mut ctx, "Drop files here", cx, 56.0, 15.0, fade(GRAY, a), mw, true);
-                        center(&mut ctx, "drag out to move/copy · double-click to open · right-click to remove", cx, 82.0, 11.0, fade(DIM, a), mw, false);
+                        // drop zone putus-putus; menyala aksen saat ada file yang sedang di-drag ke atas notch
+                        let z = (x0 + 34.0, 36.0, w - 68.0, 92.0);
+                        let hot = self.file_hover;
+                        if hot {
+                            ctx.rrect(z.0, z.1, z.2, z.3, 12.0, fade(acc, 0.09 * a));
+                        }
+                        let edge = if hot { fade(acc, 0.85) } else { [255, 255, 255, 42] };
+                        ctx.rrect_dashed(z.0, z.1, z.2, z.3, 12.0, 1.4, 5.0, 4.0, fade(edge, a));
+                        let ic = fade(if hot { acc } else { GRAY }, a);
+                        ctx.line(cx, 53.0, cx, 68.0, 1.8, ic);
+                        ctx.polyline(&[(cx - 5.5, 63.0), (cx, 68.5), (cx + 5.5, 63.0)], 1.8, ic);
+                        ctx.polyline(&[(cx - 11.0, 70.0), (cx - 11.0, 75.0), (cx + 11.0, 75.0), (cx + 11.0, 70.0)], 1.8, ic);
+                        center(&mut ctx, if hot { "Release to add" } else { "Drop files here" }, cx, 83.0, 13.0, fade(if hot { WHITE } else { GRAY }, a), mw, true);
+                        center(&mut ctx, "drag out to move/copy · double-click to open · right-click to remove", cx, 104.0, 10.5, fade(DIM, a), mw, false);
                     } else {
                         let hint = "drag out · double-click open · right-click remove";
                         let hw = text_w(&ctx, hint, 10.5, false);
@@ -1009,14 +1054,26 @@ impl App {
                     }
                 }
                 Page::Clipboard => {
-                    ctx.rrect(x0 + 26.0, 10.0, 3.0, 13.0, 1.5, fade(acc, a));
-                    ctx.text_b("Clipboard", x0 + 34.0, 9.0, 13.0, fade(WHITE, a), 120.0);
-                    ctx.text("click: paste · ctrl+click: copy · right-click: remove", x0 + 108.0, 11.0, 10.5, fade(DIM, a), w - 108.0 - 34.0 - 60.0);
+                    let hx = head(&mut ctx, x0, "Clipboard", "", acc, a);
+                    // hint rata kanan (di kiri tombol Clear bila ada), disembunyikan jika tidak muat
+                    let hint = "click: paste · ctrl+click: copy · right-click: remove";
+                    let hr = x0 + w - 34.0 - if snap.clips.is_empty() { 0.0 } else { 62.0 };
+                    let hw = text_w(&ctx, hint, 10.5, false);
+                    if hr - hw > hx + 12.0 {
+                        ctx.text(hint, hr - hw, 11.0, 10.5, fade(DIM, a), hw + 4.0);
+                    }
                     if !snap.clips.is_empty() {
                         button(&mut ctx, lay::head_btn(x0, w, 52.0), "Clear", CHIP, GRAY, a);
                     }
                     if snap.clips.is_empty() {
-                        center(&mut ctx, "Copy text or a screenshot — it shows up here", cx, 62.0, 13.0, fade(GRAY, a), mw, false);
+                        // ikon clipboard + teks
+                        let ic = fade(GRAY, a);
+                        ctx.rrect_stroke(cx - 10.0, 48.0, 20.0, 24.0, 4.0, 1.7, ic);
+                        ctx.rrect(cx - 5.0, 44.5, 10.0, 6.0, 2.5, ic);
+                        ctx.line(cx - 5.0, 59.0, cx + 5.0, 59.0, 1.5, fade(DIM, a));
+                        ctx.line(cx - 5.0, 64.5, cx + 2.5, 64.5, 1.5, fade(DIM, a));
+                        center(&mut ctx, "Nothing copied yet", cx, 82.0, 13.0, fade(GRAY, a), mw, true);
+                        center(&mut ctx, "Copy text or a screenshot — it shows up here", cx, 102.0, 10.5, fade(DIM, a), mw, false);
                     }
                     for (row, (i, c)) in snap.clips.iter().enumerate().skip(self.scroll).take(lay::ROWS).enumerate() {
                         let e = stag(pt, row);
@@ -1043,9 +1100,7 @@ impl App {
                 }
                 Page::Todo => {
                     let open = self.todos.items.iter().filter(|t| !t.0).count();
-                    ctx.rrect(x0 + 26.0, 10.0, 3.0, 13.0, 1.5, fade(acc, a));
-                    ctx.text_b("Tasks", x0 + 34.0, 9.0, 13.0, fade(WHITE, a), 80.0);
-                    ctx.text(&format!("{open} open"), x0 + 80.0, 10.0, 11.5, fade(DIM, a), 80.0);
+                    head(&mut ctx, x0, "Tasks", &format!("{open} open"), acc, a);
                     // donut progress: done / total (rata kanan header)
                     let total = self.todos.items.len();
                     if total > 0 {
@@ -1098,6 +1153,13 @@ impl App {
                         if hov {
                             ctx.text("×", r.0 + r.2 - 16.0, r.1 + 2.0, 15.0, fade(GRAY, a), 14.0);
                         }
+                    }
+                    if self.todos.items.is_empty() {
+                        let ic = fade(GRAY, a);
+                        ctx.arc(cx, 82.0, 11.0, 1.7, 1.0, ic);
+                        ctx.polyline(&[(cx - 4.5, 82.0), (cx - 1.0, 85.5), (cx + 5.0, 78.0)], 1.8, ic);
+                        center(&mut ctx, "All clear", cx, 100.0, 13.0, fade(GRAY, a), mw, true);
+                        center(&mut ctx, "Add a task above to get started", cx, 119.0, 10.5, fade(DIM, a), mw, false);
                     }
                     draw_scrollbar(&mut ctx, x0, w, self.todos.items.len() + 1, self.scroll, a);
                 }
