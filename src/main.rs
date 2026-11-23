@@ -776,6 +776,9 @@ struct App {
     lyrics_inline: bool,
     /// mode peek: saat idle notch hanya tab 10px (hover untuk membuka)
     peek: bool,
+    /// terakhir notch dipakai (hover/klik/notifikasi); peek baru aktif setelah idle `peek_delay`
+    last_use: Instant,
+    peek_delay: Duration,
     want_pip: bool,
     hover: bool,
     file_hover: bool,
@@ -837,8 +840,13 @@ impl App {
     }
 
     /// Collapsed + mode lirik aktif: pill lebar berisi baris lirik saat ini.
+    /// Mode peek hanya berlaku setelah notch tidak dipakai selama `peek_delay` (default 30 dtk).
+    fn peeking(&self) -> bool {
+        self.peek && self.last_use.elapsed() >= self.peek_delay
+    }
+
     fn lyric_pill(&self, snap: &Snap) -> bool {
-        !self.expanded() && !self.peek && snap.activity.is_none() && self.lyrics_inline && !snap.title.is_empty()
+        !self.expanded() && !self.peeking() && snap.activity.is_none() && self.lyrics_inline && !snap.title.is_empty()
     }
 
     fn target(&self, snap: &Snap) -> (f32, f32) {
@@ -854,7 +862,7 @@ impl App {
             (280.0, 44.0)
         } else if self.lyric_pill(snap) {
             (380.0, 32.0)
-        } else if self.peek {
+        } else if self.peeking() {
             PEEK
         } else {
             (230.0, 32.0)
@@ -924,6 +932,7 @@ impl App {
             self.pill.at = Instant::now();
         }
         self.pill.cur = pill_text(snap);
+        let peeking = self.peeking();
         let Some(win) = self.notch.as_mut() else { return };
         let (pw, ph) = (win.pm.width(), win.pm.height());
         // layer + mask hanya saat bentuk notch bergerak; saat diam konten sudah muat -> gambar langsung (hemat CPU)
@@ -960,7 +969,7 @@ impl App {
             ctx.shadow(x0, -r, w, h + r, r, 8.0, 5.0, 80.0 * sh);
         }
         // mode peek: area tangkap-mouse hampir transparan (alpha 1) di sekitar tab agar mudah di-hover
-        let pad = self.peek && h < 40.0;
+        let pad = peeking && h < 40.0;
         if !clip && pad {
             ctx.rrect(x0 - 24.0, -r, w + 48.0, h + r + 6.0, r, [0, 0, 0, 1]);
         }
@@ -989,7 +998,7 @@ impl App {
         ctx.rrect_stroke(x0, -r, w, h + r, r, 1.0, [255, 255, 255, (9.0 + 15.0 * a) as u8]);
         // penanda di tab peek: timer berjalan = progres fase, lagu main = aksen artwork berdenyut, selain itu garis redup
         let nk = smoothstep((20.0 - h) / 10.0);
-        if self.peek && nk > 0.0 && snap.activity.is_none() {
+        if peeking && nk > 0.0 && snap.activity.is_none() {
             let (bw, bh) = (28.0, 2.5);
             let (bx, by) = (x0 + w / 2.0 - bw / 2.0, h - 5.5);
             let p = &self.pomo;
@@ -2314,6 +2323,10 @@ impl ApplicationHandler for App {
             }
         }
         let snap = Snap::take(&self.shared.lock().unwrap());
+        // dipakai = sedang expanded atau ada notifikasi -> hitung ulang jeda idle peek
+        if self.expanded() || snap.activity.is_some() {
+            self.last_use = Instant::now();
+        }
         let (tw, th) = self.target(&snap);
         let notch_anim = !(self.w.settled(tw) && self.h.settled(th));
         let scroll_anim = (self.pip.is_some() && !self.pip_scroll.off.settled(0.0))
@@ -2332,7 +2345,7 @@ impl ApplicationHandler for App {
         let mut hs = DefaultHasher::new();
         (&snap.title, &snap.artist, snap.playing, snap.pos / 1000, snap.idx, &snap.activity, &snap.shelf).hash(&mut hs);
         (snap.battery, (snap.volume * 100.0) as i32, snap.has_lyrics, snap.art.as_ref().map(|a| Arc::as_ptr(a) as usize)).hash(&mut hs);
-        (self.hover, self.file_hover, self.want_pip, self.pip.is_some(), self.page, self.lyrics_inline, self.peek).hash(&mut hs);
+        (self.hover, self.file_hover, self.want_pip, self.pip.is_some(), self.page, self.lyrics_inline, self.peek, self.peeking()).hash(&mut hs);
         ((self.pip_font * 10.0) as i32, self.pip_size.0 as i32, self.pip_size.1 as i32, local_time().1).hash(&mut hs);
         (snap.clips.len(), snap.clips_rev, self.scroll, &self.editing, self.todos.items.len()).hash(&mut hs);
         (self.pomo.left().as_secs(), self.pomo.running(), self.pomo.phase).hash(&mut hs);
@@ -2514,6 +2527,12 @@ fn main() {
             None => cfg.lyrics || std::env::var("NOTCHY_EXPAND").is_ok_and(|v| v == "lyrics"),
         },
         peek: cfg.peek || std::env::var_os("NOTCHY_PEEK").is_some(),
+        last_use: Instant::now(),
+        peek_delay: match std::env::var("NOTCHY_PEEK_DELAY").ok().and_then(|v| v.parse::<f32>().ok()) {
+            Some(s) => Duration::from_secs_f32(s),
+            None if std::env::var_os("NOTCHY_PEEK").is_some() => Duration::ZERO,
+            None => Duration::from_secs(30),
+        },
         want_pip: false,
         hover: false,
         file_hover: demo.as_deref() == Some("drop"),
