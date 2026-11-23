@@ -249,20 +249,24 @@ fn button(ctx: &mut Ctx, r: Rect, label: &str, bg: [u8; 4], fg: [u8; 4], a: f32)
 }
 
 // ---------------------------------------------------------------- ikon
-fn icon_prev(ctx: &mut Ctx, x: f32, y: f32, c: [u8; 4]) {
-    ctx.poly(&[(x + 1.0, y - 6.5), (x + 1.0, y + 6.5), (x - 8.0, y)], c);
-    ctx.poly(&[(x + 9.0, y - 6.5), (x + 9.0, y + 6.5), (x, y)], c);
+/// Skala titik terhadap (x, y): dipakai efek tekan tombol media (k = 1 normal).
+fn zoom<const N: usize>(x: f32, y: f32, k: f32, pts: [(f32, f32); N]) -> [(f32, f32); N] {
+    pts.map(|(px, py)| (x + (px - x) * k, y + (py - y) * k))
 }
-fn icon_next(ctx: &mut Ctx, x: f32, y: f32, c: [u8; 4]) {
-    ctx.poly(&[(x - 1.0, y - 6.5), (x - 1.0, y + 6.5), (x + 8.0, y)], c);
-    ctx.poly(&[(x - 9.0, y - 6.5), (x - 9.0, y + 6.5), (x, y)], c);
+fn icon_prev(ctx: &mut Ctx, x: f32, y: f32, k: f32, c: [u8; 4]) {
+    ctx.poly(&zoom(x, y, k, [(x + 1.0, y - 6.5), (x + 1.0, y + 6.5), (x - 8.0, y)]), c);
+    ctx.poly(&zoom(x, y, k, [(x + 9.0, y - 6.5), (x + 9.0, y + 6.5), (x, y)]), c);
 }
-fn icon_play(ctx: &mut Ctx, x: f32, y: f32, playing: bool, c: [u8; 4]) {
+fn icon_next(ctx: &mut Ctx, x: f32, y: f32, k: f32, c: [u8; 4]) {
+    ctx.poly(&zoom(x, y, k, [(x - 1.0, y - 6.5), (x - 1.0, y + 6.5), (x + 8.0, y)]), c);
+    ctx.poly(&zoom(x, y, k, [(x - 9.0, y - 6.5), (x - 9.0, y + 6.5), (x, y)]), c);
+}
+fn icon_play(ctx: &mut Ctx, x: f32, y: f32, k: f32, playing: bool, c: [u8; 4]) {
     if playing {
-        ctx.rrect(x - 6.5, y - 8.0, 4.5, 16.0, 1.5, c);
-        ctx.rrect(x + 2.0, y - 8.0, 4.5, 16.0, 1.5, c);
+        ctx.rrect(x - 6.5 * k, y - 8.0 * k, 4.5 * k, 16.0 * k, 1.5 * k, c);
+        ctx.rrect(x + 2.0 * k, y - 8.0 * k, 4.5 * k, 16.0 * k, 1.5 * k, c);
     } else {
-        ctx.poly(&[(x - 5.0, y - 8.0), (x - 5.0, y + 8.0), (x + 8.0, y)], c);
+        ctx.poly(&zoom(x, y, k, [(x - 5.0, y - 8.0), (x - 5.0, y + 8.0), (x + 8.0, y)]), c);
     }
 }
 /// Gelembung kutipan (ikon lirik)
@@ -461,11 +465,24 @@ struct Fx {
     /// progres centang todo per slot (0..1)
     chk: [f32; FX_SLOTS],
     chk_key: (usize, usize),
+    /// tombol media yang baru ditekan (0 prev, 1 play/pause, 2 next) + waktu tekan
+    pulse: Option<(usize, Instant)>,
 }
 
 impl Fx {
     fn new() -> Self {
-        Fx { page_at: Instant::now(), slide: 0.0, was_open: false, dt: 0.016, dot: 0.0, hv: [0.0; FX_SLOTS], chk: [0.0; FX_SLOTS], chk_key: (usize::MAX, 0) }
+        Fx { page_at: Instant::now(), slide: 0.0, was_open: false, dt: 0.016, dot: 0.0, hv: [0.0; FX_SLOTS], chk: [0.0; FX_SLOTS], chk_key: (usize::MAX, 0), pulse: None }
+    }
+
+    /// Skala ikon tombol media: menyusut lalu kembali (~0.28 dtk) setelah ditekan.
+    fn pulse_k(&self, i: usize) -> f32 {
+        match self.pulse {
+            Some((j, t)) if j == i => {
+                let p = (t.elapsed().as_secs_f32() / 0.28).clamp(0.0, 1.0);
+                1.0 - 0.22 * (p * std::f32::consts::PI).sin()
+            }
+            _ => 1.0,
+        }
     }
 
     /// Mulai transisi baru (halaman ganti atau notch baru terbuka); state hover/centang di-reset tanpa animasi.
@@ -506,6 +523,7 @@ impl Fx {
     fn busy(&self, dot_target: f32) -> bool {
         self.page_at.elapsed() < Duration::from_millis(560)
             || (self.dot - dot_target).abs() > 0.005
+            || self.pulse.is_some_and(|(_, t)| t.elapsed() < Duration::from_millis(300))
             || self.hv.iter().chain(self.chk.iter()).any(|v| *v > 0.0 && *v < 1.0)
     }
 }
@@ -973,6 +991,7 @@ impl App {
 
             // isi halaman: geser masuk dari arah navigasi + fade; item list muncul berurutan (stag)
             let slide = self.fx.slide * 22.0 * (1.0 - ease_out(pt / 0.30));
+            let body_x = x0;
             let (x0, cx) = (x0 + slide, cx + slide);
             let a = a * ease_out(pt / 0.20);
 
@@ -1011,9 +1030,9 @@ impl App {
                     let cy = lay::CTRL_Y;
                     let (lx, ly) = lay::lyric_icon(x0);
                     icon_lyrics(&mut ctx, lx, ly, fade(if snap.has_lyrics { acc } else { DIM }, a));
-                    icon_prev(&mut ctx, cx - 46.0, cy, fade(WHITE, a));
-                    icon_play(&mut ctx, cx, cy, snap.playing, fade(WHITE, a));
-                    icon_next(&mut ctx, cx + 46.0, cy, fade(WHITE, a));
+                    icon_prev(&mut ctx, cx - 46.0, cy, self.fx.pulse_k(0), fade(WHITE, a));
+                    icon_play(&mut ctx, cx, cy, self.fx.pulse_k(1), snap.playing, fade(WHITE, a));
+                    icon_next(&mut ctx, cx + 46.0, cy, self.fx.pulse_k(2), fade(WHITE, a));
                 }
                 Page::Shelf => {
                     let n = snap.shelf.len();
@@ -1167,8 +1186,12 @@ impl App {
                     let p = &self.pomo;
                     let (rdx, ry, rr) = lay::RING;
                     let col = phase_color(p.phase);
+                    // cahaya warna fase di belakang ring + titik di ujung progres
+                    ctx.rrect_glow(body_x, -r, w, h + r, r, x0 + rdx, ry, 95.0, fade(col, 0.20 * a));
                     ctx.arc(x0 + rdx, ry, rr, 5.0, 1.0, fade(TRACK, a));
                     ctx.arc(x0 + rdx, ry, rr, 5.0, p.progress().max(0.001), fade(col, a));
+                    let ang = (-90.0 + 360.0 * p.progress()).to_radians();
+                    ctx.circle(x0 + rdx + rr * ang.cos(), ry + rr * ang.sin(), 4.0, fade(mix(col, WHITE, 0.5), a));
                     let left = p.left().as_millis() as i64;
                     center(&mut ctx, &mmss(left + 999), x0 + rdx, ry - 14.0, 20.0, fade(WHITE, a), 80.0, true);
                     center(&mut ctx, p.label(), x0 + rdx, ry + 10.0, 11.0, fade(col, a), 80.0, false);
@@ -1194,7 +1217,15 @@ impl App {
                     button(&mut ctx, lay::timer_btn(x0, 1), "Reset", CHIP, WHITE, a);
                     button(&mut ctx, lay::timer_btn(x0, 2), "Skip", CHIP, WHITE, a);
                 }
-                Page::Status => draw_status(&mut ctx, snap, x0, w, a, self.cursor),
+                Page::Status => {
+                    let (bt, nt, dv) = (lay::st_battery(x0, w), lay::st_net(x0, w), lay::st_devices(x0, w));
+                    let hv = [
+                        self.fx.hov(0, inside(self.cursor, bt)),
+                        self.fx.hov(1, inside(self.cursor, nt)),
+                        self.fx.hov(2, inside(self.cursor, dv)),
+                    ];
+                    draw_status(&mut ctx, snap, x0, w, a, self.cursor, hv)
+                }
             }
         } else if let Some(act) = &snap.activity {
             let tw = text_w(&ctx, act, 14.0, true);
@@ -1277,6 +1308,11 @@ impl App {
         } else {
             ctx.rrect(0.0, 0.0, w, h, 18.0, [16, 16, 22, 236]);
         }
+        // gaya sama dengan notch: cahaya warna artwork di tengah + tepi kaca tipis
+        if snap.art.is_some() {
+            ctx.rrect_glow(0.0, 0.0, w, h, 18.0, w / 2.0, h * 0.4, w.max(h) * 0.75, fade(art_accent(snap), 0.14));
+        }
+        ctx.rrect_stroke(0.0, 0.0, w, h, 18.0, 1.0, [255, 255, 255, 28]);
         ctx.text("×", w - 22.0, 4.0, 16.0, GRAY, 16.0);
         center(&mut ctx, &format!("{} — {}", snap.title, snap.artist), w / 2.0, h - 20.0, 10.0, DIM, mw, false);
 
@@ -1401,10 +1437,13 @@ impl App {
                     self.inline_scroll = LyricScroll::default();
                     self.mark_dirty();
                 } else if near(p, (cx - 46.0, cy), 15.0) {
+                    self.fx.pulse = Some((0, Instant::now()));
                     let _ = self.tx.send(Cmd::Prev);
                 } else if near(p, (cx, cy), 16.0) {
+                    self.fx.pulse = Some((1, Instant::now()));
                     let _ = self.tx.send(Cmd::PlayPause);
                 } else if near(p, (cx + 46.0, cy), 15.0) {
+                    self.fx.pulse = Some((2, Instant::now()));
                     let _ = self.tx.send(Cmd::Next);
                 }
             }
@@ -1699,9 +1738,9 @@ const TILE: [u8; 4] = [255, 255, 255, 15];
 const TILE_HI: [u8; 4] = [255, 255, 255, 26];
 const TILE_EDGE: [u8; 4] = [255, 255, 255, 18];
 
-fn tile(ctx: &mut Ctx, r: Rect, hov: bool, a: f32) {
-    ctx.rrect(r.0, r.1, r.2, r.3, 13.0, fade(if hov { TILE_HI } else { TILE }, a));
-    ctx.rrect_stroke(r.0, r.1, r.2, r.3, 13.0, 1.0, fade(TILE_EDGE, a));
+fn tile(ctx: &mut Ctx, r: Rect, hv: f32, a: f32) {
+    ctx.rrect(r.0, r.1, r.2, r.3, 13.0, fade(mix(TILE, TILE_HI, hv), a));
+    ctx.rrect_stroke(r.0, r.1, r.2, r.3, 13.0, 1.0, fade(mix(TILE_EDGE, [VIOLET[0], VIOLET[1], VIOLET[2], 80], hv), a));
 }
 
 fn fmt_speed(b: f32) -> String {
@@ -1815,7 +1854,7 @@ fn icon_bolt(ctx: &mut Ctx, x: f32, y: f32, k: f32, c: [u8; 4]) {
 /// Tile slider (volume / brightness): ikon kiri, label + nilai di atas, track bisa digeser.
 #[allow(clippy::too_many_arguments)]
 fn slider_tile(ctx: &mut Ctx, r: Rect, label: &str, value: &str, f: Option<f32>, dim: bool, hov: bool, a: f32) {
-    tile(ctx, r, hov, a);
+    tile(ctx, r, if hov { 1.0 } else { 0.0 }, a);
     let lw = r.2 - 42.0 - 14.0;
     let vw = text_w(ctx, value, 11.5, true);
     ctx.text(label, r.0 + 42.0, r.1 + 7.0, 11.5, fade(GRAY, a), lw - vw - 8.0);
@@ -1832,10 +1871,10 @@ fn slider_tile(ctx: &mut Ctx, r: Rect, label: &str, value: &str, f: Option<f32>,
     }
 }
 
-fn draw_status(ctx: &mut Ctx, snap: &Snap, x0: f32, w: f32, a: f32, cur: (f32, f32)) {
+fn draw_status(ctx: &mut Ctx, snap: &Snap, x0: f32, w: f32, a: f32, cur: (f32, f32), hv: [f32; 3]) {
     // ---- baterai
     let r = lay::st_battery(x0, w);
-    tile(ctx, r, inside(cur, r), a);
+    tile(ctx, r, hv[0], a);
     let (cx, cy) = (r.0 + 34.0, r.1 + r.3 / 2.0);
     match (snap.battery, &snap.power) {
         (Some((pct, ac)), pw) => {
@@ -1892,7 +1931,7 @@ fn draw_status(ctx: &mut Ctx, snap: &Snap, x0: f32, w: f32, a: f32, cur: (f32, f
 
     // ---- jaringan
     let r = lay::st_net(x0, w);
-    tile(ctx, r, inside(cur, r), a);
+    tile(ctx, r, hv[1], a);
     let n = &snap.net;
     icon_net(ctx, r.0 + 20.0, r.1 + 17.0, n.kind, fade(WHITE, a));
     let name = match (n.kind, n.name.is_empty()) {
@@ -1956,7 +1995,7 @@ fn draw_status(ctx: &mut Ctx, snap: &Snap, x0: f32, w: f32, a: f32, cur: (f32, f
 
     // ---- perangkat bluetooth
     let r = lay::st_devices(x0, w);
-    tile(ctx, r, inside(cur, r), a);
+    tile(ctx, r, hv[2], a);
     icon_bt(ctx, r.0 + 21.0, r.1 + r.3 / 2.0, fade(ACCENT, a));
     let mut x = r.0 + 40.0;
     let right = r.0 + r.2 - 8.0;
@@ -2040,9 +2079,9 @@ fn draw_inline(ctx: &mut Ctx, snap: &Snap, x0: f32, w: f32, h: f32, a: f32, want
     draw_bar(ctx, lay::l_bar(x0), snap, a);
     let c = lay::l_ctrls(x0);
     icon_lyrics(ctx, c[0].0, c[0].1, fade(ACCENT, a));
-    icon_prev(ctx, c[1].0, c[1].1, fade(WHITE, a));
-    icon_play(ctx, c[2].0, c[2].1, snap.playing, fade(WHITE, a));
-    icon_next(ctx, c[3].0, c[3].1, fade(WHITE, a));
+    icon_prev(ctx, c[1].0, c[1].1, 1.0, fade(WHITE, a));
+    icon_play(ctx, c[2].0, c[2].1, 1.0, snap.playing, fade(WHITE, a));
+    icon_next(ctx, c[3].0, c[3].1, 1.0, fade(WHITE, a));
 
     // pemisah + panel lirik
     ctx.rrect(x0 + lay::L_SPLIT, 14.0, 1.0, h - 28.0, 0.5, fade([80, 80, 88, 255], a));
@@ -2397,8 +2436,14 @@ fn main() {
         h
     };
     let shared: State = Arc::new(Mutex::new(Shared::default()));
+    let demo = std::env::var("NOTCHY_DEMO").ok();
+    if demo.is_some() {
+        demo_state(&mut shared.lock().unwrap());
+    }
     let (tx, rx) = mpsc::channel();
-    media::spawn(shared.clone(), rx);
+    if demo.is_none() {
+        media::spawn(shared.clone(), rx);
+    }
     let sys_tx = sys::spawn(shared.clone());
     let bright_tx = bright::spawn(shared.clone());
     devices::spawn(shared.clone());
@@ -2423,7 +2468,7 @@ fn main() {
         },
         want_pip: false,
         hover: false,
-        file_hover: false,
+        file_hover: demo.as_deref() == Some("drop"),
         left_at: Instant::now() - Duration::from_secs(10),
         cursor: (0.0, 0.0),
         w: Spring::default(),
@@ -2469,4 +2514,27 @@ fn main() {
         };
     }
     el.run_app(&mut app).unwrap();
+}
+
+/// debug: NOTCHY_DEMO=1 mengisi state media palsu (artwork gradient, lagu sedang diputar) untuk screenshot;
+/// NOTCHY_DEMO=drop juga menyalakan keadaan "file sedang di-drag". Thread media tidak menimpa selama tidak ada sesi SMTC.
+fn demo_state(s: &mut Shared) {
+    const S: u32 = 128;
+    let mut pm = Pixmap::new(S, S).unwrap();
+    for (i, px) in pm.data_mut().chunks_exact_mut(4).enumerate() {
+        let (x, y) = ((i as u32 % S) as f32 / S as f32, (i as u32 / S) as f32 / S as f32);
+        let t = (x * 0.6 + y * 0.4).clamp(0.0, 1.0);
+        let rgb = [(240.0 - 90.0 * t) as u8, (70.0 + 40.0 * t) as u8, (150.0 + 60.0 * t) as u8];
+        px.copy_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
+    }
+    s.title = "Midnight City".into();
+    s.artist = "M83".into();
+    s.playing = true;
+    s.dur_ms = 243_000;
+    s.pos_ms = 96_000;
+    s.stamp = Some(Instant::now());
+    s.art = Some(Arc::new(pm));
+    s.tint = [150, 60, 100];
+    s.accent = [255, 105, 140];
+    s.battery = Some((82, false));
 }

@@ -11,6 +11,14 @@ Dynamic notch untuk Windows, ditulis dengan Rust (winit + tiny-skia + windows-rs
 - Clipboard viewer (teks & gambar), klik untuk paste ke field aktif
 - Todo list
 - Timer Pomodoro yang bisa diatur
+- Halaman System info (baterai, jaringan, volume, brightness, Bluetooth)
+
+## Tampilan
+
+- Warna aksen per halaman; di halaman Media aksen dan glow diambil dari artwork lagu
+- Tepi kaca tipis, shadow lembut, chip bergradient dengan hover berwarna
+- Animasi: spring buka/tutup, geser antar halaman, item muncul berurutan, centang todo, tombol media memantul saat ditekan
+- Empty state dengan drop zone untuk Shelf
 
 ## Build
 
