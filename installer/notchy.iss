@@ -3,7 +3,7 @@
 ; Hasil: dist\notchy-setup-<versi>.exe
 
 #define AppName "notchy"
-#define AppVersion "0.2.6"
+#define AppVersion "0.2.7"
 #define AppExe "notchy.exe"
 #define BuildDir "D:\Ravelware\cargo-target\notchy\release"
 
