@@ -6,7 +6,7 @@
 
 #define AppName "notchy"
 #ifndef AppVersion
-  #define AppVersion "0.2.7"
+  #define AppVersion "0.3.0"
 #endif
 #define AppExe "notchy.exe"
 #ifndef BuildDir
