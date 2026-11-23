@@ -233,11 +233,11 @@ fn page_accent(page: Page, snap: &Snap, phase: Phase) -> [u8; 4] {
 }
 
 /// Chip dengan gradient halus, tepi tipis, dan hover berwarna aksen.
-fn chip(ctx: &mut Ctx, r: Rect, rad: f32, hov: bool, acc: [u8; 4], a: f32) {
-    let base = if hov { mix(CHIP_HI, acc, 0.16) } else { CHIP };
+fn chip(ctx: &mut Ctx, r: Rect, rad: f32, hov: f32, acc: [u8; 4], a: f32) {
+    let base = mix(CHIP, mix(CHIP_HI, acc, 0.16), hov);
     let top = mix(base, WHITE, 0.07);
     ctx.rrect_vgrad(r.0, r.1, r.2, r.3, rad, &[(0.0, fade(top, a)), (1.0, fade(base, a))]);
-    let edge = if hov { mix([255, 255, 255, 34], acc, 0.5) } else { [255, 255, 255, 16] };
+    let edge = mix([255, 255, 255, 16], mix([255, 255, 255, 34], acc, 0.5), hov);
     ctx.rrect_stroke(r.0, r.1, r.2, r.3, rad, 1.0, fade(edge, a));
 }
 
@@ -319,12 +319,19 @@ fn icon_popout(ctx: &mut Ctx, r: Rect, on: bool, a: f32) {
     ctx.rrect(x + 4.5, y + 6.5, 11.0, 8.0, 1.5, fade(BLACK, a));
     ctx.rrect(x + 10.0, y + 2.0, 9.0, 7.0, 1.5, c);
 }
-fn icon_check(ctx: &mut Ctx, x: f32, y: f32, done: bool, a: f32) {
-    if done {
-        ctx.circle(x, y, 7.5, fade(GREEN, a));
-        ctx.poly(&[(x - 4.0, y), (x - 1.0, y + 3.2), (x + 4.2, y - 2.8), (x + 3.0, y - 4.0), (x - 1.0, y + 0.8), (x - 2.8, y - 1.2)], fade(BLACK, a));
-    } else {
-        ctx.arc(x, y, 6.5, 1.6, 1.0, fade(GRAY, a));
+/// Checkbox todo; `p` = progres centang 0..1 (lingkaran hijau membesar, lalu tanda centang muncul).
+fn icon_check(ctx: &mut Ctx, x: f32, y: f32, p: f32, a: f32) {
+    if p < 0.999 {
+        ctx.arc(x, y, 6.5, 1.6, 1.0, fade(GRAY, a * (1.0 - p)));
+    }
+    if p > 0.01 {
+        ctx.circle(x, y, 7.5 * ease_out(p), fade(GREEN, a));
+        let m = ease_out((p - 0.35) / 0.65);
+        if m > 0.0 {
+            let pts = [(x - 4.0, y), (x - 1.0, y + 3.2), (x + 4.2, y - 2.8), (x + 3.0, y - 4.0), (x - 1.0, y + 0.8), (x - 2.8, y - 1.2)];
+            let pts = pts.map(|(px, py)| (x + (px - x) * m, y + (py - y) * m));
+            ctx.poly(&pts, fade(BLACK, a * m));
+        }
     }
 }
 fn phase_color(p: Phase) -> [u8; 4] {
@@ -398,6 +405,81 @@ impl Spring {
     }
     fn settled(&self, target: f32) -> bool {
         (target - self.cur).abs() < 0.25 && self.vel.abs() < 0.5
+    }
+}
+
+fn ease_out(x: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    1.0 - (1.0 - x).powi(3)
+}
+
+/// Kemunculan berurutan item ke-`i` setelah `pt` detik sejak halaman/notch dibuka (0..1, ease-out).
+fn stag(pt: f32, i: usize) -> f32 {
+    ease_out((pt - 0.05 - i as f32 * 0.035) / 0.22)
+}
+
+const FX_SLOTS: usize = 12;
+
+/// State micro-interaction: transisi halaman, dots meluncur, hover halus, centang todo.
+struct Fx {
+    page_at: Instant,
+    /// arah geser halaman baru: +1 maju, -1 mundur, 0 = hanya fade/stagger (saat notch baru dibuka)
+    slide: f32,
+    was_open: bool,
+    dt: f32,
+    /// posisi dot aktif (indeks, float) agar meluncur antar halaman
+    dot: f32,
+    /// hover per slot chip (0..1)
+    hv: [f32; FX_SLOTS],
+    /// progres centang todo per slot (0..1)
+    chk: [f32; FX_SLOTS],
+    chk_key: (usize, usize),
+}
+
+impl Fx {
+    fn new() -> Self {
+        Fx { page_at: Instant::now(), slide: 0.0, was_open: false, dt: 0.016, dot: 0.0, hv: [0.0; FX_SLOTS], chk: [0.0; FX_SLOTS], chk_key: (usize::MAX, 0) }
+    }
+
+    /// Mulai transisi baru (halaman ganti atau notch baru terbuka); state hover/centang di-reset tanpa animasi.
+    fn restart(&mut self, slide: f32) {
+        self.page_at = Instant::now();
+        self.slide = slide;
+        self.hv = [0.0; FX_SLOTS];
+        self.chk_key = (usize::MAX, 0);
+    }
+
+    fn approach(v: &mut f32, target: f32, dt: f32, rate: f32) {
+        *v += (target - *v) * (1.0 - (-dt * rate).exp());
+        if (target - *v).abs() < 0.01 {
+            *v = target;
+        }
+    }
+
+    fn hov(&mut self, slot: usize, on: bool) -> f32 {
+        let dt = self.dt;
+        let v = &mut self.hv[slot.min(FX_SLOTS - 1)];
+        Self::approach(v, if on { 1.0 } else { 0.0 }, dt, 18.0);
+        *v
+    }
+
+    fn check(&mut self, slot: usize, done: bool, snap: bool) -> f32 {
+        let dt = self.dt;
+        let v = &mut self.chk[slot.min(FX_SLOTS - 1)];
+        let t = if done { 1.0 } else { 0.0 };
+        if snap {
+            *v = t;
+        } else {
+            Self::approach(v, t, dt, 12.0);
+        }
+        *v
+    }
+
+    /// masih ada yang bergerak -> butuh redraw berikutnya
+    fn busy(&self, dot_target: f32) -> bool {
+        self.page_at.elapsed() < Duration::from_millis(560)
+            || (self.dot - dot_target).abs() > 0.005
+            || self.hv.iter().chain(self.chk.iter()).any(|v| *v > 0.0 && *v < 1.0)
     }
 }
 
@@ -661,6 +743,7 @@ struct App {
     /// sedang animasi halus -> redraw tiap vsync
     vsync: bool,
     shape_moving: bool,
+    fx: Fx,
     /// debug: NOTCHY_ANIMTEST=<folder> rekam frame animasi buka/tutup
     animtest: Option<(PathBuf, Instant)>,
     anim_n: u32,
@@ -724,6 +807,11 @@ impl App {
 
     fn set_page(&mut self, p: Page) {
         if self.page != p {
+            // arah geser: jalur terpendek di antara halaman yang melingkar
+            let n = PAGES.len();
+            let at = |q: Page| PAGES.iter().position(|&x| x == q).unwrap_or(0);
+            let fwd = (at(p) + n - at(self.page)) % n <= n / 2;
+            self.fx.restart(if fwd { 1.0 } else { -1.0 });
             self.page = p;
             self.scroll = 0;
             self.end_edit(false);
@@ -794,6 +882,18 @@ impl App {
         let ca = smoothstep((76.0 - h) / 30.0);
         let r = (h * 0.4).clamp(12.0, 30.0);
 
+        // timeline micro-interaction: mulai ulang tiap kali notch baru terbuka (slide 0 = hanya fade + stagger)
+        let cur_idx = PAGES.iter().position(|&x| x == page).unwrap_or(0) as f32;
+        if a <= 0.0 {
+            self.fx.was_open = false;
+        } else if !self.fx.was_open {
+            self.fx.was_open = true;
+            self.fx.restart(0.0);
+            self.fx.dot = cur_idx;
+        }
+        let pt = self.fx.page_at.elapsed().as_secs_f32();
+        Fx::approach(&mut self.fx.dot, cur_idx, self.fx.dt, 16.0);
+
         // bayangan lembut di bawah notch saat expanded (saat bentuk bergerak digambar di bawah hasil clip, lihat bawah)
         let sh = smoothstep((h - 70.0) / 50.0);
         if !clip && sh > 0.0 {
@@ -835,13 +935,19 @@ impl App {
             let n = PAGES.len() as f32;
             let dots_w = 14.0 + (n - 1.0) * 4.0 + (n - 1.0) * 5.0;
             let mut dx = cx - dots_w / 2.0;
-            for p in PAGES {
-                let on = p == page;
-                let dw = if on { 14.0 } else { 4.0 };
-                let dc = if on { page_accent(p, snap, self.pomo.phase) } else { DIM };
+            for (i, p) in PAGES.into_iter().enumerate() {
+                // pill aktif meluncur: lebar & warna mengikuti jarak dot ke posisi `fx.dot`
+                let k = (1.0 - (i as f32 - self.fx.dot).abs()).clamp(0.0, 1.0);
+                let dw = 4.0 + 10.0 * k;
+                let dc = mix(DIM, page_accent(p, snap, self.pomo.phase), k);
                 ctx.rrect(dx, h - 9.0, dw, 4.0, 2.0, fade(dc, a));
                 dx += dw + 5.0;
             }
+
+            // isi halaman: geser masuk dari arah navigasi + fade; item list muncul berurutan (stag)
+            let slide = self.fx.slide * 22.0 * (1.0 - ease_out(pt / 0.30));
+            let (x0, cx) = (x0 + slide, cx + slide);
+            let a = a * ease_out(pt / 0.20);
 
             match page {
                 Page::Media => {
@@ -893,9 +999,12 @@ impl App {
                         ctx.text(hint, x0 + w - 34.0 - hw, 11.0, 10.5, fade(DIM, a), mw);
                     }
                     for (i, name) in snap.shelf.iter().take(8).enumerate() {
+                        let e = stag(pt, i);
+                        let a = a * e;
                         let (x, y, cw, chh) = lay::shelf(x0, w, i);
-                        let hov = inside(self.cursor, (x, y, cw, chh));
-                        chip(&mut ctx, (x, y, cw, chh), 8.0, hov, acc, a);
+                        let y = y + (1.0 - e) * 6.0;
+                        let hv = self.fx.hov(i, inside(self.cursor, (x, y, cw, chh)));
+                        chip(&mut ctx, (x, y, cw, chh), 8.0, hv, acc, a);
                         ctx.text(name, x + 8.0, y + 7.0, 11.0, fade(WHITE, a), cw - 16.0);
                     }
                 }
@@ -910,9 +1019,12 @@ impl App {
                         center(&mut ctx, "Copy text or a screenshot — it shows up here", cx, 62.0, 13.0, fade(GRAY, a), mw, false);
                     }
                     for (row, (i, c)) in snap.clips.iter().enumerate().skip(self.scroll).take(lay::ROWS).enumerate() {
-                        let r = lay::row(x0, w, row);
-                        let hov = inside(self.cursor, r);
-                        chip(&mut ctx, r, 7.0, hov, acc, a);
+                        let e = stag(pt, row);
+                        let a = a * e;
+                        let mut r = lay::row(x0, w, row);
+                        r.1 += (1.0 - e) * 6.0;
+                        let hv = self.fx.hov(row, inside(self.cursor, r));
+                        chip(&mut ctx, r, 7.0, hv, acc, a);
                         ctx.text(&format!("{}", i + 1), r.0 + 8.0, r.1 + 5.0, 11.0, fade(DIM, a), 20.0);
                         match c {
                             Clip::Text(t) => {
@@ -961,18 +1073,29 @@ impl App {
                             }
                         }
                         None => {
-                            chip(&mut ctx, r, 7.0, inside(self.cursor, r), acc, a);
+                            let hv = self.fx.hov(0, inside(self.cursor, r));
+                            chip(&mut ctx, r, 7.0, hv, acc, a);
                             ctx.text("+  Add a task…", r.0 + 10.0, r.1 + 5.0, 12.0, fade(GRAY, a), r.2 - 20.0);
                         }
                     }
+                    // centang beranimasi hanya saat status item berubah; scroll/tambah/hapus langsung snap
+                    let key = (self.scroll, self.todos.items.len());
+                    let snap_chk = key != self.fx.chk_key;
+                    self.fx.chk_key = key;
                     for (row, (_, (done, text))) in self.todos.items.iter().enumerate().skip(self.scroll).take(lay::ROWS - 1).enumerate() {
-                        let r = lay::row(x0, w, row + 1);
-                        if inside(self.cursor, r) {
-                            ctx.rrect(r.0, r.1, r.2, r.3, 7.0, fade([255, 255, 255, 12], a));
+                        let e = stag(pt, row + 1);
+                        let a = a * e;
+                        let mut r = lay::row(x0, w, row + 1);
+                        r.1 += (1.0 - e) * 6.0;
+                        let hov = inside(self.cursor, r);
+                        let hv = self.fx.hov(row + 1, hov);
+                        if hv > 0.0 {
+                            ctx.rrect(r.0, r.1, r.2, r.3, 7.0, fade([255, 255, 255, 12], a * hv));
                         }
-                        icon_check(&mut ctx, r.0 + 12.0, r.1 + 12.0, *done, a);
-                        ctx.text(text, r.0 + 26.0, r.1 + 5.0, 12.0, fade(if *done { DIM } else { WHITE }, a), r.2 - 56.0);
-                        if inside(self.cursor, r) {
+                        let p = self.fx.check(row + 1, *done, snap_chk);
+                        icon_check(&mut ctx, r.0 + 12.0, r.1 + 12.0, p, a);
+                        ctx.text(text, r.0 + 26.0, r.1 + 5.0, 12.0, fade(mix(WHITE, DIM, p), a), r.2 - 56.0);
+                        if hov {
                             ctx.text("×", r.0 + r.2 - 16.0, r.1 + 2.0, 15.0, fade(GRAY, a), 14.0);
                         }
                     }
@@ -1996,6 +2119,7 @@ impl ApplicationHandler for App {
                     let now = Instant::now();
                     let dt = now.duration_since(self.last_frame).as_secs_f32().min(0.05);
                     self.last_frame = now;
+                    self.fx.dt = dt;
                     let (tw, th) = self.target(&snap);
                     self.w.step_shape(tw, dt);
                     self.h.step_shape(th, dt);
@@ -2055,6 +2179,9 @@ impl ApplicationHandler for App {
         let pill_anim = self.lyric_pill(&snap) && self.pill.at.elapsed() < Duration::from_millis(320);
         let caret_anim = self.editing.is_some();
         let seek_anim = self.seek.is_some();
+        // transisi halaman / stagger / hover & centang halus / dot meluncur (hanya saat expanded)
+        let dot_to = PAGES.iter().position(|&x| x == self.page).unwrap_or(0) as f32;
+        let fx_anim = self.expanded() && self.fx.busy(dot_to);
 
         let mut hs = DefaultHasher::new();
         (&snap.title, &snap.artist, snap.playing, snap.pos / 1000, snap.idx, &snap.activity, &snap.shelf).hash(&mut hs);
@@ -2071,9 +2198,9 @@ impl ApplicationHandler for App {
         let sig = hs.finish();
 
         let changed = sig != self.last_sig;
-        let anim = notch_anim || bars_anim || scroll_anim || pill_anim || caret_anim || seek_anim;
+        let anim = notch_anim || bars_anim || scroll_anim || pill_anim || caret_anim || seek_anim || fx_anim;
         // frame pacing: redraw animasi hanya kalau sudah waktunya (hindari busy loop)
-        let interval = if notch_anim || scroll_anim || pill_anim || seek_anim {
+        let interval = if notch_anim || scroll_anim || pill_anim || seek_anim || fx_anim {
             12
         } else if bars_anim {
             66
@@ -2082,7 +2209,7 @@ impl ApplicationHandler for App {
         };
         let now = Instant::now();
         // animasi utama: redraw tiap frame layar, dipacing DwmFlush (vsync) di RedrawRequested
-        self.vsync = notch_anim || scroll_anim || pill_anim || seek_anim;
+        self.vsync = notch_anim || scroll_anim || pill_anim || seek_anim || fx_anim;
         if self.vsync {
             self.next_frame = now;
         }
@@ -2255,6 +2382,7 @@ fn main() {
         next_frame: Instant::now(),
         vsync: false,
         shape_moving: true,
+        fx: Fx::new(),
         animtest: std::env::var_os("NOTCHY_ANIMTEST").map(|d| (PathBuf::from(d), Instant::now())),
         anim_n: 0,
         quit: false,
