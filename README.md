@@ -19,7 +19,7 @@ Dynamic notch untuk Windows dan Linux (X11/XWayland), ditulis dengan Rust (winit
 - Tepi kaca tipis, shadow lembut, chip bergradient dengan hover berwarna
 - Animasi: spring buka/tutup, geser antar halaman, item muncul berurutan, centang todo, tombol media memantul saat ditekan
 - Empty state dengan drop zone untuk Shelf
-- Mode peek: setelah 30 detik tidak dipakai, notch mengecil jadi tab 10px dengan penanda (garis aksen saat lagu main, progres saat timer jalan); hover untuk membuka. Aktifkan lewat ikon di pojok kanan bawah halaman Media
+- Mode peek: setelah 30 detik tidak dipakai, notch mengecil jadi tab 10px dengan penanda (garis aksen saat lagu main, progres saat timer jalan); hover untuk membuka. Tidak aktif selagi mode lirik menyala dan ada lagu. Aktifkan lewat ikon di pojok kanan bawah halaman Media
 
 ## Build
 

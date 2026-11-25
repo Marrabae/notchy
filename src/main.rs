@@ -836,14 +836,19 @@ impl App {
         self.lyrics_inline && self.page == Page::Media
     }
 
-    /// Collapsed + mode lirik aktif: pill lebar berisi baris lirik saat ini.
-    /// Mode peek hanya berlaku setelah notch tidak dipakai selama `peek_delay` (default 30 dtk).
-    fn peeking(&self) -> bool {
-        self.peek && self.last_use.elapsed() >= self.peek_delay
+    /// Mode peek hanya berlaku setelah notch tidak dipakai selama `peek_delay` (default 30 dtk),
+    /// dan tidak pernah selagi mode lirik aktif dengan lagu terpasang.
+    fn peeking(&self, snap: &Snap) -> bool {
+        self.peek && !self.lyrics_on(snap) && self.last_use.elapsed() >= self.peek_delay
     }
 
+    fn lyrics_on(&self, snap: &Snap) -> bool {
+        self.lyrics_inline && !snap.title.is_empty()
+    }
+
+    /// Collapsed + mode lirik aktif: pill lebar berisi baris lirik saat ini.
     fn lyric_pill(&self, snap: &Snap) -> bool {
-        !self.expanded() && !self.peeking() && snap.activity.is_none() && self.lyrics_inline && !snap.title.is_empty()
+        !self.expanded() && snap.activity.is_none() && self.lyrics_on(snap)
     }
 
     fn target(&self, snap: &Snap) -> (f32, f32) {
@@ -859,7 +864,7 @@ impl App {
             (280.0, 44.0)
         } else if self.lyric_pill(snap) {
             (380.0, 32.0)
-        } else if self.peeking() {
+        } else if self.peeking(snap) {
             PEEK
         } else {
             (230.0, 32.0)
@@ -929,7 +934,7 @@ impl App {
             self.pill.at = Instant::now();
         }
         self.pill.cur = pill_text(snap);
-        let peeking = self.peeking();
+        let peeking = self.peeking(snap);
         let Some(win) = self.notch.as_mut() else { return };
         let (pw, ph) = (win.pm.width(), win.pm.height());
         // layer + mask hanya saat bentuk notch bergerak; saat diam konten sudah muat -> gambar langsung (hemat CPU)
@@ -2337,7 +2342,7 @@ impl ApplicationHandler for App {
         let mut hs = DefaultHasher::new();
         (&snap.title, &snap.artist, snap.playing, snap.pos / 1000, snap.idx, &snap.activity, &snap.shelf).hash(&mut hs);
         (snap.battery, (snap.volume * 100.0) as i32, snap.has_lyrics, snap.art.as_ref().map(|a| Arc::as_ptr(a) as usize)).hash(&mut hs);
-        (self.hover, self.file_hover, self.want_pip, self.pip.is_some(), self.page, self.lyrics_inline, self.peek, self.peeking()).hash(&mut hs);
+        (self.hover, self.file_hover, self.want_pip, self.pip.is_some(), self.page, self.lyrics_inline, self.peek, self.peeking(&snap)).hash(&mut hs);
         ((self.pip_font * 10.0) as i32, self.pip_size.0 as i32, self.pip_size.1 as i32, local_time().1).hash(&mut hs);
         (snap.clips.len(), snap.clips_rev, self.scroll, &self.editing, self.todos.items.len()).hash(&mut hs);
         (self.pomo.left().as_secs(), self.pomo.running(), self.pomo.phase).hash(&mut hs);
